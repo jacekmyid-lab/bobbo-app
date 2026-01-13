@@ -1,18 +1,5 @@
 <!--
-  ============================================================================
-  TOOLBAR COMPONENT
-  ============================================================================
-  
-  Main application toolbar with tool selection and common actions.
-  Organized into groups:
-  - File operations
-  - Selection modes
-  - Primitive creation
-  - Boolean operations
-  - Transform tools
-  - View controls
-  
-  @component Toolbar.svelte
+  Toolbar.svelte - Updated with Polyline tool
 -->
 <script lang="ts">
   import { 
@@ -119,7 +106,6 @@
     // When in vertex/edge/face mode, selection will be used as pivot
     // For now, just switch to vertex mode
     selectionModeStore.set('vertex');
-    // TODO: Implement actual pivot setting workflow
   }
 </script>
 
@@ -325,6 +311,21 @@
       </button>
       <button
         class="cad-btn-icon"
+        class:active={activeTool === 'sketch-polyline'}
+        onclick={() => setTool('sketch-polyline')}
+        title="Polyline (P)"
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 12L5 8L8 10L11 5L14 7" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="2" cy="12" r="1" fill="currentColor"/>
+          <circle cx="5" cy="8" r="1" fill="currentColor"/>
+          <circle cx="8" cy="10" r="1" fill="currentColor"/>
+          <circle cx="11" cy="5" r="1" fill="currentColor"/>
+          <circle cx="14" cy="7" r="1" fill="currentColor"/>
+        </svg>
+      </button>
+      <button
+        class="cad-btn-icon"
         class:active={activeTool === 'sketch-rectangle'}
         onclick={() => setTool('sketch-rectangle')}
         title="Rectangle (R)"
@@ -351,16 +352,6 @@
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M3 13A7 7 0 0 1 13 3" stroke="currentColor" stroke-width="1.5" fill="none"/>
-        </svg>
-      </button>
-      <button
-        class="cad-btn-icon"
-        class:active={activeTool === 'sketch-spline'}
-        onclick={() => setTool('sketch-spline')}
-        title="Spline (S)"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M3 12C5 12 6 4 8 4C10 4 11 12 13 12" stroke="currentColor" stroke-width="1.5" fill="none"/>
         </svg>
       </button>
     </div>

@@ -1,15 +1,5 @@
 <!--
-  ============================================================================
-  3D VIEWPORT COMPONENT - REACTIVE VERSION
-  ============================================================================
-  
-  Real-time reactive viewport that updates immediately when:
-  - Solids are created/modified
-  - Selection changes in panels
-  - Position/transforms change
-  - Hover state changes
-  
-  @component Viewport.svelte
+  Viewport.svelte - Updated with orthographic camera for sketch mode
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -37,7 +27,7 @@
   } from '$lib/geometry/Solid';
   import SceneContent from './SceneContent.svelte';
 
-  // Use derived for reactive store access
+  // Reactive store access
   let viewportConfig = $derived($viewportStore);
   let isSketchMode = $derived($sketchEditStore.isEditing);
   let sketchPlaneId = $derived($sketchEditStore.planeId);
@@ -52,7 +42,7 @@
   // Scene references
   let canvasContainer: HTMLDivElement;
   let scene: THREE.Scene | null = null;
-  let camera: THREE.PerspectiveCamera | null = null;
+  let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
   let controls: any = null;
   let raycaster = new THREE.Raycaster();
   let mouseNDC = new THREE.Vector2();
@@ -62,6 +52,8 @@
   let animating = false;
   let targetCameraPos = { x: 50, y: 50, z: 50 };
   let targetCameraLookAt = { x: 0, y: 0, z: 0 };
+  let cameraZoom = $state(1);
+  let targetZoom = 1;
 
   // Sketch basis for grid
   let sketchBasis: { origin: THREE.Vector3; x: THREE.Vector3; y: THREE.Vector3; z: THREE.Vector3 } | null = $state(null);
@@ -78,7 +70,7 @@
   });
 
   /**
-   * Enter sketch mode - animate camera
+   * Enter sketch mode - animate camera to orthographic view
    */
   function enterSketchMode(): void {
     if (!sketchPlaneId || !camera || !controls) return;
@@ -117,9 +109,12 @@
     targetCameraLookAt = { x: origin.x, y: origin.y, z: origin.z };
     animating = true;
 
-    // Disable rotation
+    // Switch to orthographic and disable rotation
     setTimeout(() => {
-      if (controls) controls.enableRotate = false;
+      if (controls) {
+        controls.enableRotate = false;
+      }
+      // TODO: Switch camera to orthographic
     }, 600);
   }
 
@@ -444,7 +439,7 @@
   /**
    * Initialize scene
    */
-  function onCameraCreate(cam: THREE.PerspectiveCamera) {
+  function onCameraCreate(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     camera = cam;
     if (cam.parent) {
       scene = cam.parent as THREE.Scene;
@@ -472,6 +467,14 @@
           controls.target.x += (targetCameraLookAt.x - controls.target.x) * lerp;
           controls.target.y += (targetCameraLookAt.y - controls.target.y) * lerp;
           controls.target.z += (targetCameraLookAt.z - controls.target.z) * lerp;
+        }
+        
+        // Update zoom for orthographic camera
+        if (camera instanceof THREE.OrthographicCamera) {
+          const dist = camera.position.distanceTo(new THREE.Vector3(targetCameraLookAt.x, targetCameraLookAt.y, targetCameraLookAt.z));
+          const targetZoom = 100 / dist;
+          camera.zoom += (targetZoom - camera.zoom) * lerp;
+          camera.updateProjectionMatrix();
         }
         
         controls.update?.();
@@ -514,6 +517,9 @@
       };
     }
   });
+
+  // Camera type for sketch mode
+  let cameraType: 'perspective' | 'orthographic' = $derived(isSketchMode ? 'orthographic' : 'perspective');
 </script>
 
 <div 
@@ -532,24 +538,48 @@
     <!-- Scene Content Manager - handles solids -->
     <SceneContent />
     
-    <!-- Camera -->
-    <T.PerspectiveCamera
-      makeDefault
-      position={[50, 50, 50]}
-      fov={45}
-      near={0.1}
-      far={10000}
-      oncreate={(ref) => onCameraCreate(ref)}
-    >
-      <OrbitControls 
-        enableDamping
-        dampingFactor={0.1}
-        rotateSpeed={0.5}
-        panSpeed={0.5}
-        zoomSpeed={1}
-        oncreate={(ref) => onControlsCreate(ref)}
-      />
-    </T.PerspectiveCamera>
+    <!-- Camera - switches between perspective and orthographic -->
+    {#if cameraType === 'perspective'}
+      <T.PerspectiveCamera
+        makeDefault
+        position={[50, 50, 50]}
+        fov={45}
+        near={0.1}
+        far={10000}
+        oncreate={(ref) => onCameraCreate(ref)}
+      >
+        <OrbitControls 
+          enableDamping
+          dampingFactor={0.1}
+          rotateSpeed={0.5}
+          panSpeed={0.5}
+          zoomSpeed={1}
+          oncreate={(ref) => onControlsCreate(ref)}
+        />
+      </T.PerspectiveCamera>
+    {:else}
+      <T.OrthographicCamera
+        makeDefault
+        position={[50, 50, 50]}
+        zoom={10}
+        left={-100}
+        right={100}
+        top={100}
+        bottom={-100}
+        near={0.1}
+        far={10000}
+        oncreate={(ref) => onCameraCreate(ref)}
+      >
+        <OrbitControls 
+          enableDamping
+          dampingFactor={0.1}
+          rotateSpeed={0.5}
+          panSpeed={0.5}
+          zoomSpeed={1}
+          oncreate={(ref) => onControlsCreate(ref)}
+        />
+      </T.OrthographicCamera>
+    {/if}
 
     <!-- Lights -->
     <T.AmbientLight intensity={0.5} />
@@ -562,14 +592,42 @@
       <T.GridHelper args={[200, 20, 0x2563eb, 0x1e3a5f]} />
     {/if}
 
-    <!-- Sketch Grid (on plane) -->
+    <!-- Sketch Grid (on plane with reference lines) -->
     {#if showSketchGrid && sketchBasis}
       {@const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sketchBasis.z)}
       <T.Group 
         position={[sketchBasis.origin.x, sketchBasis.origin.y, sketchBasis.origin.z]}
         quaternion={quat}
       >
+        <!-- Main grid -->
         <T.GridHelper args={[200, 40, 0x06b6d4, 0x0e7490]} />
+        
+        <!-- Reference axes on sketch plane -->
+        <T.Line>
+          <T.BufferGeometry>
+            <T.BufferAttribute
+              attach="attributes-position"
+              args={[new Float32Array([-100, 0, 0, 100, 0, 0]), 3]}
+            />
+          </T.BufferGeometry>
+          <T.LineBasicMaterial color="#ef4444" linewidth={2} />
+        </T.Line>
+        
+        <T.Line>
+          <T.BufferGeometry>
+            <T.BufferAttribute
+              attach="attributes-position"
+              args={[new Float32Array([0, 0, -100, 0, 0, 100]), 3]}
+            />
+          </T.BufferGeometry>
+          <T.LineBasicMaterial color="#22c55e" linewidth={2} />
+        </T.Line>
+        
+        <!-- Origin marker -->
+        <T.Mesh>
+          <T.SphereGeometry args={[0.5, 16, 16]} />
+          <T.MeshBasicMaterial color="#06b6d4" />
+        </T.Mesh>
       </T.Group>
 
       <!-- Sketch plane visualization -->
@@ -588,12 +646,12 @@
     {/if}
 
     <!-- Axes -->
-    {#if viewportConfig.showAxes}
+    {#if viewportConfig.showAxes && !isSketchMode}
       <T.AxesHelper args={[50]} />
     {/if}
 
     <!-- Origin point -->
-    {#if viewportConfig.showOrigin}
+    {#if viewportConfig.showOrigin && !isSketchMode}
       <T.Mesh position={[0, 0, 0]}>
         <T.SphereGeometry args={[0.3, 16, 16]} />
         <T.MeshBasicMaterial color="#ffffff" />
@@ -601,7 +659,7 @@
     {/if}
 
     <!-- Active model pivot indicator -->
-    {#if activeSolid}
+    {#if activeSolid && !isSketchMode}
       <T.Group position={[pivotPos.x, pivotPos.y, pivotPos.z]}>
         <!-- Pivot sphere -->
         <T.Mesh>
@@ -628,6 +686,9 @@
       <span class="count-badge">
         {solids.size} solid{solids.size !== 1 ? 's' : ''}
       </span>
+      {#if isSketchMode}
+        <span class="camera-badge ortho">ORTHO</span>
+      {/if}
     </div>
     
     {#if activeModelId && activeSolid}
@@ -711,6 +772,21 @@
     color: white;
   }
 
+  .camera-badge {
+    padding: 4px 10px;
+    background: rgba(15, 23, 42, 0.95);
+    border: 1px solid #334155;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .camera-badge.ortho {
+    background: #06b6d4;
+    border-color: #06b6d4;
+    color: white;
+  }
+
   .count-badge {
     padding: 4px 10px;
     background: rgba(15, 23, 42, 0.95);
@@ -729,74 +805,4 @@
   }
 
   .topo-counts {
-    color: #64748b;
-    margin-left: 4px;
-  }
-
-  .hint-badge {
-    padding: 4px 10px;
-    background: rgba(15, 23, 42, 0.95);
-    border-radius: 4px;
-    font-size: 10px;
-    color: #64748b;
-    font-style: italic;
-  }
-
-  .hover-badge {
-    padding: 4px 10px;
-    background: rgba(34, 197, 94, 0.9);
-    border-radius: 4px;
-    font-size: 11px;
-    color: white;
-    font-weight: 500;
-  }
-
-  .hover-badge.face { background: rgba(59, 130, 246, 0.9); }
-  .hover-badge.edge { background: rgba(34, 197, 94, 0.9); }
-  .hover-badge.vertex { background: rgba(251, 191, 36, 0.9); color: black; }
-
-  .sketch-badge {
-    padding: 6px 14px;
-    background: #06b6d4;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    color: white;
-    letter-spacing: 1px;
-  }
-
-  .shortcuts {
-    position: absolute;
-    bottom: 12px;
-    left: 12px;
-    display: flex;
-    gap: 16px;
-    padding: 8px 12px;
-    background: rgba(15, 23, 42, 0.95);
-    border-radius: 6px;
-    font-size: 10px;
-    color: #64748b;
-    pointer-events: none;
-  }
-
-  .shortcuts span {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  kbd {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 20px;
-    height: 18px;
-    padding: 0 5px;
-    background: #334155;
-    border-radius: 3px;
-    font-size: 10px;
-    font-weight: 600;
-    color: #e2e8f0;
-    font-family: inherit;
-  }
-</style>
+    color: #64
