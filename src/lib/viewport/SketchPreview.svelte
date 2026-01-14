@@ -8,10 +8,12 @@
   import type { Plane } from '$lib/core/types';
   import type { PolylineTool, LineTool, CircleTool, RectangleTool } from './sketchTools';
 
-  // Props
-  export let tool: PolylineTool | LineTool | CircleTool | RectangleTool | null;
-  export let plane: Plane;
-  export let toolType: string;
+  // Props using $props()
+  let { tool, plane, toolType } = $props<{
+    tool: PolylineTool | LineTool | CircleTool | RectangleTool | null;
+    plane: Plane;
+    toolType: string;
+  }>();
 
   /**
    * Convert 2D plane point to 3D world point

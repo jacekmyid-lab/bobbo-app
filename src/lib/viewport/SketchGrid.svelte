@@ -1,18 +1,16 @@
-<!--
-  SketchGrid.svelte
-  Renders the sketch grid with reference axes and origin marker
--->
 <script lang="ts">
   import { T } from '@threlte/core';
   import * as THREE from 'three';
 
-  // Props
-  export let basis: {
-    origin: THREE.Vector3;
-    x: THREE.Vector3;
-    y: THREE.Vector3;
-    z: THREE.Vector3;
-  };
+  // Props - Svelte 5 runes mode
+  let { basis } = $props<{
+    basis: {
+      origin: THREE.Vector3;
+      x: THREE.Vector3;
+      y: THREE.Vector3;
+      z: THREE.Vector3;
+    }
+  }>();
 
   // Calculate quaternion for plane orientation
   let quat = $derived(

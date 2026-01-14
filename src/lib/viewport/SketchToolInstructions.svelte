@@ -5,9 +5,11 @@
 <script lang="ts">
   import type { PolylineTool } from './sketchTools';
 
-  // Props
-  export let toolType: string;
-  export let tool: any = null;
+  // Props using $props()
+  let { toolType, tool = null } = $props<{
+    toolType: string;
+    tool: any;
+  }>();
 
   // Get instructions based on tool type
   function getInstructions(): { key: string; action: string }[] {

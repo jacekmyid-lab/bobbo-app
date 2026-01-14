@@ -6,11 +6,13 @@
   import { selectionModeStore, hoverStore } from '$lib/stores/cadStore';
   import type { Solid } from '$lib/geometry/Solid';
 
-  // Props
-  export let isSketchMode: boolean;
-  export let activeModelId: string | null;
-  export let activeSolid: Solid | null;
-  export let solidCount: number;
+  // Props using $props()
+  let { isSketchMode, activeModelId, activeSolid, solidCount } = $props<{
+    isSketchMode: boolean;
+    activeModelId: string | null;
+    activeSolid: Solid | null;
+    solidCount: number;
+  }>();
 
   // Store values
   let selectionMode = $derived($selectionModeStore);
