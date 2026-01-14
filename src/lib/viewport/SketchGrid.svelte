@@ -2,13 +2,15 @@
   import { T } from '@threlte/core';
   import * as THREE from 'three';
 
-  // Props - Svelte 5 runes mode
+  // Props - now includes gridSize and gridDivisions
   let { basis } = $props<{
     basis: {
       origin: THREE.Vector3;
       x: THREE.Vector3;
       y: THREE.Vector3;
       z: THREE.Vector3;
+      gridSize: number;
+      gridDivisions: number;
     }
   }>();
 
@@ -20,20 +22,18 @@
     )
   );
 
-  // Grid configuration
-  const gridSize = 200;
-  const gridDivisions = 40;
-  const axisLength = 100;
+  // Use dynamic grid size from basis (calculated based on model size)
+  const axisLength = $derived(basis.gridSize * 0.4);
 </script>
 
 <T.Group 
   position={[basis.origin.x, basis.origin.y, basis.origin.z]}
   quaternion={quat}
 >
-  <!-- Main grid -->
-  <T.GridHelper args={[gridSize, gridDivisions, 0x06b6d4, 0x0e7490]} />
+  <!-- Main grid - 1:1 scale with model units -->
+  <T.GridHelper args={[basis.gridSize, basis.gridDivisions, 0x06b6d4, 0x0e7490]} />
   
-  <!-- X axis (red) -->
+  <!-- X axis (red) in plane coordinates -->
   <T.Line>
     <T.BufferGeometry>
       <T.BufferAttribute
@@ -44,7 +44,7 @@
     <T.LineBasicMaterial color="#ef4444" linewidth={2} />
   </T.Line>
   
-  <!-- Y axis (green) -->
+  <!-- Y axis (green) in plane coordinates -->
   <T.Line>
     <T.BufferGeometry>
       <T.BufferAttribute
@@ -79,7 +79,7 @@
   position={[basis.origin.x, basis.origin.y, basis.origin.z]}
   quaternion={quat}
 >
-  <T.PlaneGeometry args={[gridSize, gridSize]} />
+  <T.PlaneGeometry args={[basis.gridSize, basis.gridSize]} />
   <T.MeshBasicMaterial 
     color="#06b6d4"
     transparent

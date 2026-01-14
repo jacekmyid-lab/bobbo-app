@@ -1,11 +1,19 @@
 <!--
-  SceneContent.svelte
-  Manages solids inside Threlte Canvas context
+  SceneContent.svelte - FIXED
+  ✅ Poprawne zarządzanie widocznością wierzchołków
+  ✅ Reaktywna aktualizacja przy zmianie selekcji
 -->
 <script lang="ts">
   import { T, useThrelte } from '@threlte/core';
   import * as THREE from 'three';
-  import { solidStore, activeModelStore, selectionStore, hoverStore, selectionModeStore, pivotUpdateStore } from '$lib/stores/cadStore';
+  import { 
+    solidStore, 
+    activeModelStore, 
+    selectionStore, 
+    hoverStore, 
+    selectionModeStore, 
+    pivotUpdateStore 
+  } from '$lib/stores/cadStore';
   import type { Solid, CADFace, CADEdge, CADVertex } from '$lib/geometry/Solid';
 
   // Get Threlte context
@@ -19,18 +27,18 @@
   let selectionMode = $derived($selectionModeStore);
   let pivotUpdate = $derived($pivotUpdateStore);
 
-  // Track managed solids - use $state for reactivity
+  // Track managed solids
   let managedSolids = $state(new Set<string>());
 
   // Current hover for cleanup
   let currentHoveredObject: CADFace | CADEdge | CADVertex | null = null;
 
-  console.log('[SceneContent] Component initialized, scene:', !!scene);
+  console.log('[SceneContent] Component initialized');
 
   // Sync solids with scene
   $effect(() => {
     const solidCount = solids.size;
-    console.log(`[SceneContent] Effect triggered, solidCount: ${solidCount}, scene: ${!!scene}`);
+    console.log(`[SceneContent] Sync effect, solidCount: ${solidCount}`);
     
     if (!scene) {
       console.log('[SceneContent] No scene yet');
@@ -42,8 +50,7 @@
       if (!managedSolids.has(nodeId)) {
         scene.add(solid);
         managedSolids = new Set([...managedSolids, nodeId]);
-        console.log(`[SceneContent] Added solid: ${nodeId} (${solid.faces.length}F/${solid.edges.length}E/${solid.vertices.length}V)`);
-        console.log(`[SceneContent] Scene children count: ${scene.children.length}`);
+        console.log(`[SceneContent] Added solid: ${nodeId}`);
       }
     }
 
@@ -90,24 +97,29 @@
     invalidate();
   });
 
-  // Update vertex visibility
+  // Update vertex visibility - tylko dla aktywnego modelu w trybie vertex
   $effect(() => {
     const mode = selectionMode;
     const activeId = activeModelId;
     const showVerts = mode === 'vertex' && activeId !== null;
+    
     for (const [nodeId, solid] of solids) {
+      // Vertices visible only for active model in vertex mode
       solid.showVertices = showVerts && nodeId === activeId;
     }
+    
     invalidate();
   });
 
   function applySelectionHighlighting(): void {
+    // Clear all highlights first
     for (const solid of solids.values()) {
       for (const face of solid.faces) face.setSelected(false);
       for (const edge of solid.edges) edge.setSelected(false);
       for (const vertex of solid.vertices) vertex.setSelected(false);
     }
 
+    // Apply new highlights
     for (const sel of selection) {
       const solid = solids.get(sel.modelId);
       if (!solid) continue;
@@ -126,6 +138,7 @@
   }
 
   function applyHoverFromStore(): void {
+    // Clear previous hover
     if (currentHoveredObject) {
       currentHoveredObject.setHovered(false);
       currentHoveredObject = null;

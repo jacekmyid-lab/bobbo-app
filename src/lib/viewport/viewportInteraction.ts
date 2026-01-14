@@ -1,7 +1,7 @@
 /**
  * viewportInteraction.ts
  * Handles all mouse and keyboard interactions in the viewport
- * FIXED: Dodano brakujące importy
+ * FIXED: Dodano pełną logikę aktywacji modelu i selekcji topology
  */
 
 import * as THREE from 'three';
@@ -11,10 +11,10 @@ import {
   hoverStore,
   selectionModeStore,
   activeModelStore,
-  sketchEditStore
+  sketchEditStore,
+  pivotUpdateStore
 } from '$lib/stores/cadStore';
-// DODANO BRAKUJĄCE IMPORTY!
-import type { Solid, CADFace, CADEdge, CADVertex } from '$lib/geometry/Solid';
+import { Solid, CADFace, CADEdge, CADVertex } from '$lib/geometry/Solid';
 
 export function useViewportInteraction(
   getContainer: () => HTMLDivElement | undefined,
@@ -38,6 +38,7 @@ export function useViewportInteraction(
     raycaster.setFromCamera(mouseNDC, camera);
     const mode = get(selectionModeStore);
 
+    // Model mode: any solid
     if (mode === 'model') {
       const allFaces: THREE.Object3D[] = [];
       for (const solid of solids.values()) {
@@ -51,6 +52,7 @@ export function useViewportInteraction(
       return null;
     }
 
+    // Topology modes: require active model
     const activeModel = getActiveModel();
     if (!activeModel) return null;
 
@@ -131,7 +133,7 @@ export function useViewportInteraction(
         elementIndex: element.vertexIndex,
         elementName: element.vertexName
       });
-    } else if (element && 'nodeId' in element) {
+    } else if (element instanceof Solid) {
       hoverStore.set({
         type: 'model',
         modelId: element.nodeId,
@@ -148,10 +150,11 @@ export function useViewportInteraction(
     const element = findElementAtMouse();
     const mode = get(selectionModeStore);
     const activeId = get(activeModelStore);
-    const selection = get(selectionStore);
+    const currentSelection = get(selectionStore);
     
+    // Model mode - just select, don't activate (activation via double-click)
     if (mode === 'model') {
-      if (element && 'nodeId' in element) {
+      if (element instanceof Solid) {
         selectionStore.set([{
           type: 'model',
           modelId: element.nodeId,
@@ -164,9 +167,10 @@ export function useViewportInteraction(
       return;
     }
 
+    // Topology modes - require active model
     if (!activeId) return;
 
-    const baseSelection = addToSelection ? [...selection] : [{
+    const baseSelection = addToSelection ? [...currentSelection] : [{
       type: 'model' as const,
       modelId: activeId,
       elementIndex: -1,
@@ -200,6 +204,7 @@ export function useViewportInteraction(
         }
       }]);
     } else if (!addToSelection) {
+      // Keep model active but clear topology selection
       selectionStore.set([{
         type: 'model',
         modelId: activeId,
@@ -212,7 +217,8 @@ export function useViewportInteraction(
   function handleDoubleClick(event: MouseEvent): void {
     const element = findElementAtMouse();
     
-    if (element && 'nodeId' in element) {
+    if (element instanceof Solid) {
+      // Double-click activates the model
       activeModelStore.set(element.nodeId);
       selectionStore.set([{
         type: 'model',
@@ -220,15 +226,20 @@ export function useViewportInteraction(
         elementIndex: -1,
         elementName: element.name
       }]);
-    } else if (element && 'parentSolid' in element && element.parentSolid) {
-      const parentId = element.parentSolid.nodeId;
+      console.log(`[Viewport] Activated model: ${element.nodeId}`);
+    } else if (element instanceof CADFace || element instanceof CADEdge || element instanceof CADVertex) {
+      // Double-click on topology element - activate its parent
+      const parentId = element.parentSolid?.nodeId;
       if (parentId) {
         activeModelStore.set(parentId);
+        console.log(`[Viewport] Activated model via topology: ${parentId}`);
       }
     } else {
+      // Double-click on empty space - deactivate
       activeModelStore.set(null);
       selectionModeStore.set('model');
       selectionStore.clear();
+      console.log(`[Viewport] Deactivated model`);
     }
   }
 
@@ -247,6 +258,41 @@ export function useViewportInteraction(
         break;
       case 'v':
         selectionModeStore.set('vertex');
+        break;
+      case 'p':
+        // Set pivot to selected element
+        const activeModel = getActiveModel();
+        if (activeModel) {
+          const currentSelection = get(selectionStore);
+          const selFaces = currentSelection.filter(s => s.type === 'face');
+          const selEdges = currentSelection.filter(s => s.type === 'edge');
+          const selVerts = currentSelection.filter(s => s.type === 'vertex');
+          
+          if (selVerts.length > 0) {
+            const v = activeModel.vertices[selVerts[0].elementIndex];
+            if (v) {
+              activeModel.setPivotToVertex(v);
+              pivotUpdateStore.update(n => n + 1);
+            }
+          } else if (selEdges.length > 0) {
+            const e = activeModel.edges[selEdges[0].elementIndex];
+            if (e) {
+              activeModel.setPivotToEdge(e);
+              pivotUpdateStore.update(n => n + 1);
+            }
+          } else if (selFaces.length > 0) {
+            const f = activeModel.faces[selFaces[0].elementIndex];
+            if (f) {
+              activeModel.setPivotToFace(f);
+              pivotUpdateStore.update(n => n + 1);
+            }
+          } else {
+            // No selection - reset to center
+            activeModel.setPivotToCenter();
+            pivotUpdateStore.update(n => n + 1);
+          }
+          console.log(`[Viewport] Pivot set to (${activeModel.pivot.x.toFixed(2)}, ${activeModel.pivot.y.toFixed(2)}, ${activeModel.pivot.z.toFixed(2)})`);
+        }
         break;
       case 'escape':
         if (get(sketchEditStore).isEditing) {
