@@ -1,5 +1,5 @@
 <!--
-  Viewport.svelte - Updated with orthographic camera for sketch mode
+  Viewport.svelte - Main 3D viewport (refactored)
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -8,437 +8,133 @@
   import * as THREE from 'three';
   
   import { 
-    documentStore,
-    selectionStore,
-    hoverStore,
-    selectionModeStore,
     viewportStore,
     sketchEditStore,
     solidStore,
     activeModelStore,
-    pivotUpdateStore
+    pivotUpdateStore,
+    documentStore
   } from '$lib/stores/cadStore';
-  import { 
-    Solid,
-    CADFace,
-    CADEdge,
-    CADVertex,
-    CADMaterials
-  } from '$lib/geometry/Solid';
+  
   import SceneContent from './SceneContent.svelte';
+  import ViewportOverlay from './ViewportOverlay.svelte';
+  import SketchGrid from './SketchGrid.svelte';
+  import SketchPreview from './SketchPreview.svelte';
+  import SketchToolInstructions from './SketchToolInstructions.svelte';
+  import { useViewportInteraction } from './viewportInteraction';
+  import { useCameraAnimation } from './cameraAnimation';
+  import { PolylineTool, LineTool, CircleTool, RectangleTool } from './sketchTools';
+  import { createSketcher } from '$lib/sketcher/Sketcher';
+  import { toolStore } from '$lib/stores/cadStore';
 
-  // Reactive store access
+  // Reactive store values
   let viewportConfig = $derived($viewportStore);
   let isSketchMode = $derived($sketchEditStore.isEditing);
   let sketchPlaneId = $derived($sketchEditStore.planeId);
-  let selectionMode = $derived($selectionModeStore);
-  let planes = $derived($documentStore.planes);
   let solids = $derived($solidStore);
-  let selection = $derived($selectionStore);
   let activeModelId = $derived($activeModelStore);
-  let hover = $derived($hoverStore);
   let pivotUpdate = $derived($pivotUpdateStore);
+  let planes = $derived($documentStore.planes);
 
   // Scene references
   let canvasContainer: HTMLDivElement;
   let scene: THREE.Scene | null = null;
   let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
   let controls: any = null;
-  let raycaster = new THREE.Raycaster();
-  let mouseNDC = new THREE.Vector2();
 
-  // Camera animation state
-  let savedCameraState: { position: THREE.Vector3; target: THREE.Vector3 } | null = null;
-  let animating = false;
-  let targetCameraPos = { x: 50, y: 50, z: 50 };
-  let targetCameraLookAt = { x: 0, y: 0, z: 0 };
-  let cameraZoom = $state(1);
-  let targetZoom = 1;
+  // Sketch tools
+  let sketcher = $state<any>(null);
+  let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
+  let currentToolType = $derived($toolStore.activeTool);
 
-  // Sketch basis for grid
-  let sketchBasis: { origin: THREE.Vector3; x: THREE.Vector3; y: THREE.Vector3; z: THREE.Vector3 } | null = $state(null);
-
-  // Handle sketch mode changes - reactive
+  // Initialize sketcher when entering sketch mode
   $effect(() => {
-    const sketching = isSketchMode;
-    const planeId = sketchPlaneId;
-    if (sketching && planeId) {
-      enterSketchMode();
-    } else if (!sketching && savedCameraState) {
-      exitSketchMode();
+    if (isSketchMode && sketchPlaneId && !sketcher) {
+      const plane = planes.get(sketchPlaneId);
+      if (plane) {
+        sketcher = createSketcher($sketchEditStore.sketchId || 'temp', plane);
+      }
+    } else if (!isSketchMode) {
+      sketcher = null;
+      activeTool = null;
     }
   });
 
-  /**
-   * Enter sketch mode - animate camera to orthographic view
-   */
-  function enterSketchMode(): void {
-    if (!sketchPlaneId || !camera || !controls) return;
-    
-    const plane = planes.get(sketchPlaneId);
-    if (!plane) return;
-
-    // Save camera state
-    savedCameraState = {
-      position: camera.position.clone(),
-      target: controls.target?.clone() || new THREE.Vector3()
-    };
-
-    // Compute plane basis
-    const origin = new THREE.Vector3(plane.origin.x, plane.origin.y, plane.origin.z);
-    const normal = new THREE.Vector3(plane.normal.x, plane.normal.y, plane.normal.z).normalize();
-    
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    const x = new THREE.Vector3();
-    const y = new THREE.Vector3();
-    
-    if (Math.abs(normal.dot(worldUp)) > 0.9) {
-      x.crossVectors(new THREE.Vector3(1, 0, 0), normal).normalize();
-    } else {
-      x.crossVectors(worldUp, normal).normalize();
-    }
-    y.crossVectors(normal, x).normalize();
-
-    sketchBasis = { origin, x, y, z: normal };
-
-    // Animate camera to face plane
-    const distance = 100;
-    const newPos = origin.clone().add(normal.clone().multiplyScalar(distance));
-    
-    targetCameraPos = { x: newPos.x, y: newPos.y, z: newPos.z };
-    targetCameraLookAt = { x: origin.x, y: origin.y, z: origin.z };
-    animating = true;
-
-    // Switch to orthographic and disable rotation
-    setTimeout(() => {
-      if (controls) {
-        controls.enableRotate = false;
-      }
-      // TODO: Switch camera to orthographic
-    }, 600);
-  }
-
-  /**
-   * Exit sketch mode
-   */
-  function exitSketchMode(): void {
-    if (savedCameraState && camera && controls) {
-      targetCameraPos = { 
-        x: savedCameraState.position.x, 
-        y: savedCameraState.position.y, 
-        z: savedCameraState.position.z 
-      };
-      targetCameraLookAt = {
-        x: savedCameraState.target.x,
-        y: savedCameraState.target.y,
-        z: savedCameraState.target.z
-      };
-      animating = true;
-
-      if (controls) controls.enableRotate = true;
-    }
-
-    sketchBasis = null;
-    savedCameraState = null;
-  }
-
-  /**
-   * Get active model
-   */
-  function getActiveModel(): Solid | null {
-    return activeModelId ? solids.get(activeModelId) || null : null;
-  }
-
-  /**
-   * Find element under mouse
-   */
-  function findElementAtMouse(): CADFace | CADEdge | CADVertex | Solid | null {
-    if (!scene || !camera) return null;
-
-    raycaster.setFromCamera(mouseNDC, camera);
-
-    // Model mode: any solid
-    if (selectionMode === 'model') {
-      const allFaces: THREE.Object3D[] = [];
-      for (const solid of solids.values()) {
-        allFaces.push(...solid.faces);
-      }
-      const intersects = raycaster.intersectObjects(allFaces, false);
-      if (intersects.length > 0) {
-        const face = intersects[0].object as CADFace;
-        return face.parentSolid;
-      }
-      return null;
-    }
-
-    // Topology modes: require active model
-    const activeModel = getActiveModel();
-    if (!activeModel) return null;
-
-    if (selectionMode === 'face') {
-      const intersects = raycaster.intersectObjects(activeModel.faces, false);
-      if (intersects.length > 0) {
-        return intersects[0].object as CADFace;
-      }
-    }
-
-    if (selectionMode === 'edge') {
-      raycaster.params.Line = { threshold: 1.0 };
-      const intersects = raycaster.intersectObjects(activeModel.edges, false);
-      if (intersects.length > 0) {
-        return intersects[0].object as CADEdge;
-      }
-    }
-
-    if (selectionMode === 'vertex') {
-      const threshold = 20;
-      let closest: CADVertex | null = null;
-      let closestDist = Infinity;
-
-      for (const vertex of activeModel.vertices) {
-        if (!vertex.visible) continue;
-        
-        const screenPos = vertex.position3D.clone().project(camera);
-        const rect = canvasContainer?.getBoundingClientRect();
-        if (!rect) continue;
-        
-        const dx = (screenPos.x - mouseNDC.x) * rect.width / 2;
-        const dy = (screenPos.y - mouseNDC.y) * rect.height / 2;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        if (dist < threshold && dist < closestDist) {
-          closestDist = dist;
-          closest = vertex;
-        }
-      }
-      
-      return closest;
-    }
-
-    return null;
-  }
-
-  /**
-   * Handle mouse move
-   */
-  function handleMouseMove(event: MouseEvent): void {
-    if (!canvasContainer || !camera) return;
-
-    const rect = canvasContainer.getBoundingClientRect();
-    mouseNDC.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouseNDC.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-    const element = findElementAtMouse();
-    
-    if (element instanceof CADFace) {
-      hoverStore.set({
-        type: 'face',
-        modelId: element.parentSolid?.nodeId || '',
-        elementIndex: element.faceIndex,
-        elementName: element.faceName
-      });
-    } else if (element instanceof CADEdge) {
-      hoverStore.set({
-        type: 'edge',
-        modelId: element.parentSolid?.nodeId || '',
-        elementIndex: element.edgeIndex,
-        elementName: element.edgeName
-      });
-    } else if (element instanceof CADVertex) {
-      hoverStore.set({
-        type: 'vertex',
-        modelId: element.parentSolid?.nodeId || '',
-        elementIndex: element.vertexIndex,
-        elementName: element.vertexName
-      });
-    } else if (element instanceof Solid) {
-      hoverStore.set({
-        type: 'model',
-        modelId: element.nodeId,
-        elementIndex: -1,
-        elementName: element.name
-      });
-    } else {
-      hoverStore.set(null);
-    }
-  }
-
-  /**
-   * Handle click - selection only, not activation
-   */
-  function handleClick(event: MouseEvent): void {
-    const addToSelection = event.shiftKey;
-    const element = findElementAtMouse();
-    
-    // Model mode - just show info, don't auto-activate
-    if (selectionMode === 'model') {
-      if (element instanceof Solid) {
-        // In model mode, clicking selects but doesn't activate
-        // Double-click activates (handled in handleDoubleClick)
-        selectionStore.set([{
-          type: 'model',
-          modelId: element.nodeId,
-          elementIndex: -1,
-          elementName: element.name
-        }]);
-      } else {
-        selectionStore.clear();
-      }
+  // Initialize tool when tool type changes
+  $effect(() => {
+    if (!isSketchMode || !sketcher) {
+      activeTool = null;
       return;
     }
 
-    // Topology modes - require active model
-    if (!activeModelId) return;
+    const plane = sketchPlaneId ? planes.get(sketchPlaneId) : null;
+    if (!plane) return;
 
-    const baseSelection = addToSelection ? [...selection] : [{
-      type: 'model',
-      modelId: activeModelId,
-      elementIndex: -1,
-      elementName: ''
-    }];
-    
-    if (element instanceof CADFace) {
-      selectionStore.set([...baseSelection, {
-        type: 'face',
-        modelId: activeModelId,
-        elementIndex: element.faceIndex,
-        elementName: element.faceName
-      }]);
-    } else if (element instanceof CADEdge) {
-      selectionStore.set([...baseSelection, {
-        type: 'edge',
-        modelId: activeModelId,
-        elementIndex: element.edgeIndex,
-        elementName: element.edgeName
-      }]);
-    } else if (element instanceof CADVertex) {
-      selectionStore.set([...baseSelection, {
-        type: 'vertex',
-        modelId: activeModelId,
-        elementIndex: element.vertexIndex,
-        elementName: element.vertexName,
-        position: {
-          x: element.position3D.x,
-          y: element.position3D.y,
-          z: element.position3D.z
-        }
-      }]);
-    } else if (!addToSelection) {
-      // Keep model active but clear topology selection
-      selectionStore.set([{
-        type: 'model',
-        modelId: activeModelId,
-        elementIndex: -1,
-        elementName: ''
-      }]);
+    // Deactivate old tool
+    if (activeTool) {
+      activeTool.deactivate();
     }
-  }
 
-  /**
-   * Handle double-click - activates model
-   */
-  function handleDoubleClick(event: MouseEvent): void {
-    const element = findElementAtMouse();
+    // Create new tool
+    const canvas = canvasContainer?.querySelector('canvas') || null;
     
-    if (element instanceof Solid) {
-      // Double-click activates the model, stay in model mode to show Transform panel
-      activeModelStore.set(element.nodeId);
-      selectionStore.set([{
-        type: 'model',
-        modelId: element.nodeId,
-        elementIndex: -1,
-        elementName: element.name
-      }]);
-      console.log(`[Viewport] Activated model: ${element.nodeId}`);
-    } else if (element instanceof CADFace || element instanceof CADEdge || element instanceof CADVertex) {
-      // Double-click on topology element - activate its parent
-      const parentId = element.parentSolid?.nodeId;
-      if (parentId) {
-        activeModelStore.set(parentId);
-        console.log(`[Viewport] Activated model via topology: ${parentId}`);
-      }
-    } else {
-      // Double-click on empty space - deactivate
-      activeModelStore.set(null);
-      selectionModeStore.set('model');
-      selectionStore.clear();
-      console.log(`[Viewport] Deactivated model`);
+    switch (currentToolType) {
+      case 'sketch-polyline':
+        activeTool = new PolylineTool(canvas, camera, sketcher, plane);
+        activeTool.activate();
+        break;
+      case 'sketch-line':
+        activeTool = new LineTool(canvas, camera, sketcher, plane);
+        activeTool.activate();
+        break;
+      case 'sketch-circle':
+        activeTool = new CircleTool(canvas, camera, sketcher, plane);
+        activeTool.activate();
+        break;
+      case 'sketch-rectangle':
+        activeTool = new RectangleTool(canvas, camera, sketcher, plane);
+        activeTool.activate();
+        break;
+      default:
+        activeTool = null;
     }
-  }
+  });
 
-  /**
-   * Handle keyboard
-   */
-  function handleKeyDown(event: KeyboardEvent): void {
-    if (event.target instanceof HTMLInputElement) return;
-    
-    switch (event.key.toLowerCase()) {
-      case 'm':
-        selectionModeStore.set('model');
-        break;
-      case 'f':
-        selectionModeStore.set('face');
-        break;
-      case 'e':
-        selectionModeStore.set('edge');
-        break;
-      case 'v':
-        selectionModeStore.set('vertex');
-        break;
-      case 'p':
-        const activeModel = getActiveModel();
-        if (activeModel) {
-          const selFaces = selection.filter(s => s.type === 'face');
-          const selEdges = selection.filter(s => s.type === 'edge');
-          const selVerts = selection.filter(s => s.type === 'vertex');
-          
-          if (selVerts.length > 0) {
-            const v = activeModel.vertices[selVerts[0].elementIndex];
-            if (v) {
-              activeModel.setPivotToVertex(v);
-              pivotPos = { x: activeModel.pivot.x, y: activeModel.pivot.y, z: activeModel.pivot.z };
-            }
-          } else if (selEdges.length > 0) {
-            const e = activeModel.edges[selEdges[0].elementIndex];
-            if (e) {
-              activeModel.setPivotToEdge(e);
-              pivotPos = { x: activeModel.pivot.x, y: activeModel.pivot.y, z: activeModel.pivot.z };
-            }
-          } else if (selFaces.length > 0) {
-            const f = activeModel.faces[selFaces[0].elementIndex];
-            if (f) {
-              activeModel.setPivotToFace(f);
-              pivotPos = { x: activeModel.pivot.x, y: activeModel.pivot.y, z: activeModel.pivot.z };
-            }
-          } else {
-            // No selection - reset to center
-            activeModel.setPivotToCenter();
-            pivotPos = { x: activeModel.pivot.x, y: activeModel.pivot.y, z: activeModel.pivot.z };
-          }
-          console.log(`[Viewport] Pivot set to (${pivotPos.x.toFixed(2)}, ${pivotPos.y.toFixed(2)}, ${pivotPos.z.toFixed(2)})`);
-        }
-        break;
-      case 'escape':
-        if (isSketchMode) {
-          sketchEditStore.exit();
-        } else {
-          activeModelStore.set(null);
-          selectionStore.clear();
-        }
-        break;
+  // Camera animation
+  const { 
+    animating,
+    targetCameraPos,
+    targetCameraLookAt,
+    sketchBasis,
+    enterSketchMode,
+    exitSketchMode,
+    savedCameraState
+  } = useCameraAnimation(planes);
+
+  // Viewport interaction (mouse, keyboard)
+  const {
+    handleMouseMove,
+    handleClick,
+    handleDoubleClick,
+    handleContextMenu,
+    handleKeyDown
+  } = useViewportInteraction(
+    () => canvasContainer,
+    () => camera,
+    () => scene,
+    solids
+  );
+
+  // Handle sketch mode changes
+  $effect(() => {
+    if (isSketchMode && sketchPlaneId) {
+      enterSketchMode(sketchPlaneId, camera, controls);
+    } else if (!isSketchMode && savedCameraState) {
+      exitSketchMode(camera, controls);
     }
-  }
+  });
 
-  /**
-   * Handle context menu
-   */
-  function handleContextMenu(event: MouseEvent): void {
-    event.preventDefault();
-  }
-
-  /**
-   * Initialize scene
-   */
+  // Camera initialization
   function onCameraCreate(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     camera = cam;
     if (cam.parent) {
@@ -451,8 +147,42 @@
     controls = ctrl;
   }
 
+  // Mount lifecycle
   onMount(() => {
     window.addEventListener('keydown', handleKeyDown);
+
+    // Add sketch tool event handlers
+    const canvas = canvasContainer?.querySelector('canvas');
+    
+    const sketchMouseMove = (e: MouseEvent) => {
+      if (activeTool) activeTool.handleMouseMove(e);
+    };
+    
+    const sketchClick = (e: MouseEvent) => {
+      if (activeTool) {
+        e.stopPropagation();
+        activeTool.handleClick(e);
+      }
+    };
+    
+    const sketchRightClick = (e: MouseEvent) => {
+      if (activeTool) {
+        e.preventDefault();
+        e.stopPropagation();
+        activeTool.handleRightClick(e);
+      }
+    };
+    
+    const sketchKeyDown = (e: KeyboardEvent) => {
+      if (activeTool) activeTool.handleKeyDown(e);
+    };
+
+    if (canvas) {
+      canvas.addEventListener('mousemove', sketchMouseMove);
+      canvas.addEventListener('click', sketchClick, true);
+      canvas.addEventListener('contextmenu', sketchRightClick);
+    }
+    window.addEventListener('keydown', sketchKeyDown);
 
     // Animation loop
     let animFrame: number;
@@ -471,20 +201,15 @@
         
         // Update zoom for orthographic camera
         if (camera instanceof THREE.OrthographicCamera) {
-          const dist = camera.position.distanceTo(new THREE.Vector3(targetCameraLookAt.x, targetCameraLookAt.y, targetCameraLookAt.z));
+          const dist = camera.position.distanceTo(
+            new THREE.Vector3(targetCameraLookAt.x, targetCameraLookAt.y, targetCameraLookAt.z)
+          );
           const targetZoom = 100 / dist;
           camera.zoom += (targetZoom - camera.zoom) * lerp;
           camera.updateProjectionMatrix();
         }
         
         controls.update?.();
-        
-        const dist = Math.abs(camera.position.x - targetCameraPos.x) +
-                     Math.abs(camera.position.y - targetCameraPos.y) +
-                     Math.abs(camera.position.z - targetCameraPos.z);
-        if (dist < 0.1) {
-          animating = false;
-        }
       }
       animFrame = requestAnimationFrame(animate);
     };
@@ -492,24 +217,28 @@
     
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', sketchKeyDown);
+      if (canvas) {
+        canvas.removeEventListener('mousemove', sketchMouseMove);
+        canvas.removeEventListener('click', sketchClick, true);
+        canvas.removeEventListener('contextmenu', sketchRightClick);
+      }
       cancelAnimationFrame(animFrame);
     };
   });
 
-  // Computed values for template
+  // Computed values
   let activeSolid = $derived(activeModelId ? solids.get(activeModelId) : null);
   let showWorldGrid = $derived(viewportConfig.showGrid && !isSketchMode);
-  let showSketchGrid = $derived(isSketchMode && sketchBasis !== null);
+  let cameraType: 'perspective' | 'orthographic' = $derived(
+    isSketchMode ? 'orthographic' : 'perspective'
+  );
   
-  // Pivot position state for reactivity (world space = model position + local pivot)
+  // Pivot position (world space)
   let pivotPos = $state({ x: 0, y: 0, z: 0 });
-  
-  // Update pivot when active solid changes or pivot moves
   $effect(() => {
-    const updateCount = pivotUpdate; // Track pivot updates
-    const activeId = activeModelId;
+    const updateCount = pivotUpdate;
     if (activeSolid) {
-      // Pivot in world space = model position + local pivot
       pivotPos = {
         x: activeSolid.position.x + activeSolid.pivot.x,
         y: activeSolid.position.y + activeSolid.pivot.y,
@@ -517,9 +246,6 @@
       };
     }
   });
-
-  // Camera type for sketch mode
-  let cameraType: 'perspective' | 'orthographic' = $derived(isSketchMode ? 'orthographic' : 'perspective');
 </script>
 
 <div 
@@ -535,7 +261,6 @@
   tabindex="0"
 >
   <Canvas>
-    <!-- Scene Content Manager - handles solids -->
     <SceneContent />
     
     <!-- Camera - switches between perspective and orthographic -->
@@ -587,62 +312,22 @@
     <T.DirectionalLight position={[-50, 50, -50]} intensity={0.4} />
     <T.HemisphereLight args={[0xffffff, 0x444444, 0.3]} />
 
-    <!-- World Grid (hidden in sketch mode) -->
+    <!-- World Grid -->
     {#if showWorldGrid}
       <T.GridHelper args={[200, 20, 0x2563eb, 0x1e3a5f]} />
     {/if}
 
-    <!-- Sketch Grid (on plane with reference lines) -->
-    {#if showSketchGrid && sketchBasis}
-      {@const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), sketchBasis.z)}
-      <T.Group 
-        position={[sketchBasis.origin.x, sketchBasis.origin.y, sketchBasis.origin.z]}
-        quaternion={quat}
-      >
-        <!-- Main grid -->
-        <T.GridHelper args={[200, 40, 0x06b6d4, 0x0e7490]} />
-        
-        <!-- Reference axes on sketch plane -->
-        <T.Line>
-          <T.BufferGeometry>
-            <T.BufferAttribute
-              attach="attributes-position"
-              args={[new Float32Array([-100, 0, 0, 100, 0, 0]), 3]}
-            />
-          </T.BufferGeometry>
-          <T.LineBasicMaterial color="#ef4444" linewidth={2} />
-        </T.Line>
-        
-        <T.Line>
-          <T.BufferGeometry>
-            <T.BufferAttribute
-              attach="attributes-position"
-              args={[new Float32Array([0, 0, -100, 0, 0, 100]), 3]}
-            />
-          </T.BufferGeometry>
-          <T.LineBasicMaterial color="#22c55e" linewidth={2} />
-        </T.Line>
-        
-        <!-- Origin marker -->
-        <T.Mesh>
-          <T.SphereGeometry args={[0.5, 16, 16]} />
-          <T.MeshBasicMaterial color="#06b6d4" />
-        </T.Mesh>
-      </T.Group>
-
-      <!-- Sketch plane visualization -->
-      <T.Mesh 
-        position={[sketchBasis.origin.x, sketchBasis.origin.y, sketchBasis.origin.z]}
-        quaternion={quat}
-      >
-        <T.PlaneGeometry args={[200, 200]} />
-        <T.MeshBasicMaterial 
-          color="#06b6d4"
-          transparent
-          opacity={0.03}
-          side={THREE.DoubleSide}
-        />
-      </T.Mesh>
+    <!-- Sketch Grid Component -->
+    {#if isSketchMode && sketchBasis}
+      <SketchGrid basis={sketchBasis} />
+      
+      <!-- Sketch preview -->
+      {#if activeTool && sketchPlaneId}
+        {@const plane = planes.get(sketchPlaneId)}
+        {#if plane}
+          <SketchPreview tool={activeTool} {plane} toolType={currentToolType} />
+        {/if}
+      {/if}
     {/if}
 
     <!-- Axes -->
@@ -661,14 +346,11 @@
     <!-- Active model pivot indicator -->
     {#if activeSolid && !isSketchMode}
       <T.Group position={[pivotPos.x, pivotPos.y, pivotPos.z]}>
-        <!-- Pivot sphere -->
         <T.Mesh>
           <T.SphereGeometry args={[0.6, 16, 16]} />
           <T.MeshBasicMaterial color="#ffff00" transparent opacity={0.9} />
         </T.Mesh>
-        <!-- Mini axes at pivot -->
         <T.AxesHelper args={[12]} />
-        <!-- Ring around pivot -->
         <T.Mesh rotation={[Math.PI / 2, 0, 0]}>
           <T.RingGeometry args={[0.8, 1.0, 32]} />
           <T.MeshBasicMaterial color="#ffff00" transparent opacity={0.5} side={2} />
@@ -677,51 +359,18 @@
     {/if}
   </Canvas>
 
-  <!-- Overlay -->
-  <div class="viewport-overlay">
-    <div class="status-row">
-      <span class="mode-badge" class:active={selectionMode === 'model'}>
-        {selectionMode.toUpperCase()}
-      </span>
-      <span class="count-badge">
-        {solids.size} solid{solids.size !== 1 ? 's' : ''}
-      </span>
-      {#if isSketchMode}
-        <span class="camera-badge ortho">ORTHO</span>
-      {/if}
-    </div>
-    
-    {#if activeModelId && activeSolid}
-      <div class="active-badge">
-        Active: {activeSolid.name || activeModelId.slice(0, 8)}
-        <span class="topo-counts">
-          ({activeSolid.faces.length}F / {activeSolid.edges.length}E / {activeSolid.vertices.length}V)
-        </span>
-      </div>
-    {:else if selectionMode !== 'model'}
-      <div class="hint-badge">Click a model first (M)</div>
-    {/if}
-
-    {#if hover}
-      <div class="hover-badge" class:face={hover.type === 'face'} class:edge={hover.type === 'edge'} class:vertex={hover.type === 'vertex'}>
-        {hover.type}: {hover.elementName || hover.modelId?.slice(0, 8)}
-      </div>
-    {/if}
-
-    {#if isSketchMode}
-      <div class="sketch-badge">✏️ SKETCH MODE</div>
-    {/if}
-  </div>
-
-  <!-- Shortcuts -->
-  <div class="shortcuts">
-    <span><kbd>M</kbd> Model</span>
-    <span><kbd>F</kbd> Face</span>
-    <span><kbd>E</kbd> Edge</span>
-    <span><kbd>V</kbd> Vertex</span>
-    <span><kbd>P</kbd> Pivot</span>
-    <span><kbd>ESC</kbd> Clear</span>
-  </div>
+  <!-- UI Overlay -->
+  <ViewportOverlay 
+    {isSketchMode}
+    {activeModelId}
+    {activeSolid}
+    solidCount={solids.size}
+  />
+  
+  <!-- Sketch tool instructions -->
+  {#if isSketchMode && activeTool}
+    <SketchToolInstructions toolType={currentToolType} tool={activeTool} />
+  {/if}
 </div>
 
 <style>
@@ -740,69 +389,4 @@
   .cad-viewport.has-active {
     border: 1px solid #3b82f6;
   }
-
-  .viewport-overlay {
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    pointer-events: none;
-  }
-
-  .status-row {
-    display: flex;
-    gap: 8px;
-  }
-
-  .mode-badge {
-    padding: 4px 10px;
-    background: rgba(15, 23, 42, 0.95);
-    border: 1px solid #334155;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    color: #94a3b8;
-  }
-
-  .mode-badge.active {
-    background: #3b82f6;
-    border-color: #3b82f6;
-    color: white;
-  }
-
-  .camera-badge {
-    padding: 4px 10px;
-    background: rgba(15, 23, 42, 0.95);
-    border: 1px solid #334155;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .camera-badge.ortho {
-    background: #06b6d4;
-    border-color: #06b6d4;
-    color: white;
-  }
-
-  .count-badge {
-    padding: 4px 10px;
-    background: rgba(15, 23, 42, 0.95);
-    border-radius: 4px;
-    font-size: 11px;
-    color: #64748b;
-  }
-
-  .active-badge {
-    padding: 6px 12px;
-    background: rgba(59, 130, 246, 0.2);
-    border: 1px solid #3b82f6;
-    border-radius: 4px;
-    font-size: 11px;
-    color: #93c5fd;
-  }
-
-  .topo-counts {
-    color: #64
+</style>
