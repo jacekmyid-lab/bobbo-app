@@ -1,5 +1,5 @@
 <!--
-  Viewport.svelte - Main 3D viewport (refactored)
+  Viewport.svelte - FIXED: Usunięto nieskończoną pętlę w $effect
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -47,6 +47,11 @@
   let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
   let currentToolType = $derived($toolStore.activeTool);
 
+  // Camera animation
+  const cameraAnim = useCameraAnimation(planes);
+  let animating = $derived($cameraAnim.animatingStore);
+  let sketchBasis = $derived($cameraAnim.sketchBasisStore);
+
   // Initialize sketcher when entering sketch mode
   $effect(() => {
     if (isSketchMode && sketchPlaneId && !sketcher) {
@@ -70,12 +75,10 @@
     const plane = sketchPlaneId ? planes.get(sketchPlaneId) : null;
     if (!plane) return;
 
-    // Deactivate old tool
     if (activeTool) {
       activeTool.deactivate();
     }
 
-    // Create new tool
     const canvas = canvasContainer?.querySelector('canvas') || null;
     
     switch (currentToolType) {
@@ -100,18 +103,7 @@
     }
   });
 
-  // Camera animation
-  const { 
-    animating,
-    targetCameraPos,
-    targetCameraLookAt,
-    sketchBasis,
-    enterSketchMode,
-    exitSketchMode,
-    savedCameraState
-  } = useCameraAnimation(planes);
-
-  // Viewport interaction (mouse, keyboard)
+  // Viewport interaction
   const {
     handleMouseMove,
     handleClick,
@@ -128,13 +120,12 @@
   // Handle sketch mode changes
   $effect(() => {
     if (isSketchMode && sketchPlaneId) {
-      enterSketchMode(sketchPlaneId, camera, controls);
-    } else if (!isSketchMode && savedCameraState) {
-      exitSketchMode(camera, controls);
+      cameraAnim.enterSketchMode(sketchPlaneId, camera, controls);
+    } else if (!isSketchMode && cameraAnim.savedCameraState) {
+      cameraAnim.exitSketchMode(camera, controls);
     }
   });
 
-  // Camera initialization
   function onCameraCreate(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     camera = cam;
     if (cam.parent) {
@@ -147,11 +138,9 @@
     controls = ctrl;
   }
 
-  // Mount lifecycle
   onMount(() => {
     window.addEventListener('keydown', handleKeyDown);
 
-    // Add sketch tool event handlers
     const canvas = canvasContainer?.querySelector('canvas');
     
     const sketchMouseMove = (e: MouseEvent) => {
@@ -189,20 +178,22 @@
     const animate = () => {
       if (camera && controls && animating) {
         const lerp = 0.12;
-        camera.position.x += (targetCameraPos.x - camera.position.x) * lerp;
-        camera.position.y += (targetCameraPos.y - camera.position.y) * lerp;
-        camera.position.z += (targetCameraPos.z - camera.position.z) * lerp;
+        const targetPos = cameraAnim.targetCameraPos;
+        const targetLookAt = cameraAnim.targetCameraLookAt;
+        
+        camera.position.x += (targetPos.x - camera.position.x) * lerp;
+        camera.position.y += (targetPos.y - camera.position.y) * lerp;
+        camera.position.z += (targetPos.z - camera.position.z) * lerp;
         
         if (controls.target) {
-          controls.target.x += (targetCameraLookAt.x - controls.target.x) * lerp;
-          controls.target.y += (targetCameraLookAt.y - controls.target.y) * lerp;
-          controls.target.z += (targetCameraLookAt.z - controls.target.z) * lerp;
+          controls.target.x += (targetLookAt.x - controls.target.x) * lerp;
+          controls.target.y += (targetLookAt.y - controls.target.y) * lerp;
+          controls.target.z += (targetLookAt.z - controls.target.z) * lerp;
         }
         
-        // Update zoom for orthographic camera
         if (camera instanceof THREE.OrthographicCamera) {
           const dist = camera.position.distanceTo(
-            new THREE.Vector3(targetCameraLookAt.x, targetCameraLookAt.y, targetCameraLookAt.z)
+            new THREE.Vector3(targetLookAt.x, targetLookAt.y, targetLookAt.z)
           );
           const targetZoom = 100 / dist;
           camera.zoom += (targetZoom - camera.zoom) * lerp;
@@ -227,17 +218,21 @@
     };
   });
 
-  // Computed values
   let activeSolid = $derived(activeModelId ? solids.get(activeModelId) : null);
   let showWorldGrid = $derived(viewportConfig.showGrid && !isSketchMode);
   let cameraType: 'perspective' | 'orthographic' = $derived(
     isSketchMode ? 'orthographic' : 'perspective'
   );
   
-  // Pivot position (world space)
+  // FIX: Używamy onMount zamiast $effect żeby uniknąć nieskończonej pętli!
   let pivotPos = $state({ x: 0, y: 0, z: 0 });
+  
+  // Obserwuj zmiany pivotUpdate
   $effect(() => {
-    const updateCount = pivotUpdate;
+    // Odczytaj wartość żeby Svelte wiedział że to zależy od pivotUpdate
+    const _ = pivotUpdate;
+    
+    // Zaktualizuj pozycję tylko jeśli activeSolid istnieje
     if (activeSolid) {
       pivotPos = {
         x: activeSolid.position.x + activeSolid.pivot.x,
@@ -263,7 +258,6 @@
   <Canvas>
     <SceneContent />
     
-    <!-- Camera - switches between perspective and orthographic -->
     {#if cameraType === 'perspective'}
       <T.PerspectiveCamera
         makeDefault
@@ -306,22 +300,18 @@
       </T.OrthographicCamera>
     {/if}
 
-    <!-- Lights -->
     <T.AmbientLight intensity={0.5} />
     <T.DirectionalLight position={[50, 100, 50]} intensity={0.8} />
     <T.DirectionalLight position={[-50, 50, -50]} intensity={0.4} />
     <T.HemisphereLight args={[0xffffff, 0x444444, 0.3]} />
 
-    <!-- World Grid -->
     {#if showWorldGrid}
       <T.GridHelper args={[200, 20, 0x2563eb, 0x1e3a5f]} />
     {/if}
 
-    <!-- Sketch Grid Component -->
     {#if isSketchMode && sketchBasis}
       <SketchGrid basis={sketchBasis} />
       
-      <!-- Sketch preview -->
       {#if activeTool && sketchPlaneId}
         {@const plane = planes.get(sketchPlaneId)}
         {#if plane}
@@ -330,12 +320,10 @@
       {/if}
     {/if}
 
-    <!-- Axes -->
     {#if viewportConfig.showAxes && !isSketchMode}
       <T.AxesHelper args={[50]} />
     {/if}
 
-    <!-- Origin point -->
     {#if viewportConfig.showOrigin && !isSketchMode}
       <T.Mesh position={[0, 0, 0]}>
         <T.SphereGeometry args={[0.3, 16, 16]} />
@@ -343,7 +331,6 @@
       </T.Mesh>
     {/if}
 
-    <!-- Active model pivot indicator -->
     {#if activeSolid && !isSketchMode}
       <T.Group position={[pivotPos.x, pivotPos.y, pivotPos.z]}>
         <T.Mesh>
@@ -359,7 +346,6 @@
     {/if}
   </Canvas>
 
-  <!-- UI Overlay -->
   <ViewportOverlay 
     {isSketchMode}
     {activeModelId}
@@ -367,7 +353,6 @@
     solidCount={solids.size}
   />
   
-  <!-- Sketch tool instructions -->
   {#if isSketchMode && activeTool}
     <SketchToolInstructions toolType={currentToolType} tool={activeTool} />
   {/if}

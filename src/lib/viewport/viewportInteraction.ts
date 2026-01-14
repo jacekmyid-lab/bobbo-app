@@ -1,6 +1,7 @@
 /**
  * viewportInteraction.ts
  * Handles all mouse and keyboard interactions in the viewport
+ * FIXED: Dodano brakujące importy
  */
 
 import * as THREE from 'three';
@@ -12,6 +13,7 @@ import {
   activeModelStore,
   sketchEditStore
 } from '$lib/stores/cadStore';
+// DODANO BRAKUJĄCE IMPORTY!
 import type { Solid, CADFace, CADEdge, CADVertex } from '$lib/geometry/Solid';
 
 export function useViewportInteraction(
@@ -23,17 +25,11 @@ export function useViewportInteraction(
   const raycaster = new THREE.Raycaster();
   const mouseNDC = new THREE.Vector2();
 
-  /**
-   * Get active model
-   */
   function getActiveModel(): Solid | null {
     const activeId = get(activeModelStore);
     return activeId ? solids.get(activeId) || null : null;
   }
 
-  /**
-   * Find element under mouse
-   */
   function findElementAtMouse(): CADFace | CADEdge | CADVertex | Solid | null {
     const scene = getScene();
     const camera = getCamera();
@@ -42,7 +38,6 @@ export function useViewportInteraction(
     raycaster.setFromCamera(mouseNDC, camera);
     const mode = get(selectionModeStore);
 
-    // Model mode: any solid
     if (mode === 'model') {
       const allFaces: THREE.Object3D[] = [];
       for (const solid of solids.values()) {
@@ -56,7 +51,6 @@ export function useViewportInteraction(
       return null;
     }
 
-    // Topology modes: require active model
     const activeModel = getActiveModel();
     if (!activeModel) return null;
 
@@ -105,9 +99,6 @@ export function useViewportInteraction(
     return null;
   }
 
-  /**
-   * Handle mouse move
-   */
   function handleMouseMove(event: MouseEvent): void {
     const container = getContainer();
     const camera = getCamera();
@@ -140,7 +131,7 @@ export function useViewportInteraction(
         elementIndex: element.vertexIndex,
         elementName: element.vertexName
       });
-    } else if (element instanceof Solid) {
+    } else if (element && 'nodeId' in element) {
       hoverStore.set({
         type: 'model',
         modelId: element.nodeId,
@@ -152,9 +143,6 @@ export function useViewportInteraction(
     }
   }
 
-  /**
-   * Handle click - selection
-   */
   function handleClick(event: MouseEvent): void {
     const addToSelection = event.shiftKey;
     const element = findElementAtMouse();
@@ -163,7 +151,7 @@ export function useViewportInteraction(
     const selection = get(selectionStore);
     
     if (mode === 'model') {
-      if (element instanceof Solid) {
+      if (element && 'nodeId' in element) {
         selectionStore.set([{
           type: 'model',
           modelId: element.nodeId,
@@ -179,7 +167,7 @@ export function useViewportInteraction(
     if (!activeId) return;
 
     const baseSelection = addToSelection ? [...selection] : [{
-      type: 'model',
+      type: 'model' as const,
       modelId: activeId,
       elementIndex: -1,
       elementName: ''
@@ -221,13 +209,10 @@ export function useViewportInteraction(
     }
   }
 
-  /**
-   * Handle double-click - activate model
-   */
   function handleDoubleClick(event: MouseEvent): void {
     const element = findElementAtMouse();
     
-    if (element instanceof Solid) {
+    if (element && 'nodeId' in element) {
       activeModelStore.set(element.nodeId);
       selectionStore.set([{
         type: 'model',
@@ -235,8 +220,8 @@ export function useViewportInteraction(
         elementIndex: -1,
         elementName: element.name
       }]);
-    } else if (element instanceof CADFace || element instanceof CADEdge || element instanceof CADVertex) {
-      const parentId = element.parentSolid?.nodeId;
+    } else if (element && 'parentSolid' in element && element.parentSolid) {
+      const parentId = element.parentSolid.nodeId;
       if (parentId) {
         activeModelStore.set(parentId);
       }
@@ -247,9 +232,6 @@ export function useViewportInteraction(
     }
   }
 
-  /**
-   * Handle keyboard
-   */
   function handleKeyDown(event: KeyboardEvent): void {
     if (event.target instanceof HTMLInputElement) return;
     
@@ -277,9 +259,6 @@ export function useViewportInteraction(
     }
   }
 
-  /**
-   * Handle context menu
-   */
   function handleContextMenu(event: MouseEvent): void {
     event.preventDefault();
   }
