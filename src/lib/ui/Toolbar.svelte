@@ -251,6 +251,31 @@
           <circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.5"/>
         </svg>
       </button>
+      
+     <div class="toolbar-separator" style="height: 16px; margin: 0 4px;"></div>
+
+      <button class="cad-btn-icon" class:active={activeTool === 'sketch-trim'} onclick={() => setTool('sketch-trim')} title="Trim (Utnij)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M12 4L4 12M10 2L2 10" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M14 8L8 14" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/>
+        </svg>
+      </button>
+
+      <button class="cad-btn-icon" class:active={activeTool === 'sketch-extend'} onclick={() => setTool('sketch-extend')} title="Extend (Wydłuż)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 8H8" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 8H14" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/>
+          <line x1="14" y1="4" x2="14" y2="12" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+      </button>
+
+      <button class="cad-btn-icon" class:active={activeTool === 'sketch-offset'} onclick={() => setTool('sketch-offset')} title="Offset (Odsuń)">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M3 3H10V10" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M6 6H13V13" stroke="currentColor" stroke-width="1.5" opacity="0.6"/>
+        </svg>
+      </button>
+
     </div>
     <button class="cad-btn exit-sketch" onclick={exitSketchMode}>Exit Sketch</button>
   {:else}

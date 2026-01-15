@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import type { Point2D, Plane } from '$lib/core/types';
 import { Sketcher, SketchEntityFactory } from '$lib/sketcher/Sketcher';
+import { SketchMath } from '../geometry/SketchMath';
 
 /**
  * Base class for sketch tools
@@ -531,3 +532,117 @@ export class RectangleTool extends SketchTool {
     return this.oppositeCorner;
   }
 }
+
+/**
+ * Narzędzie Trim (Utnij)
+ */
+export class TrimTool extends SketchTool {
+  reset(): void {}
+  handleMouseMove(event: MouseEvent): void {}
+  handleRightClick(event: MouseEvent): void { this.deactivate(); }
+  handleKeyDown(event: KeyboardEvent): void { if(event.key === 'Escape') this.deactivate(); }
+
+  handleClick(event: MouseEvent): void {
+    if (!this.isActive || !this.sketcher) return;
+    const point = this.screenToPlane(event.clientX, event.clientY);
+    if (!point) return;
+
+    // Znajdź najbliższą linię (kliknięcie nie musi być idealne)
+    let closestId: string | null = null;
+    let minD = 10; // Tolerancja w jednostkach modelu
+
+    for (const entity of this.sketcher.getEntities()) {
+      if (entity.type === 'line') {
+        const proj = SketchMath.projectPointOnLine(point, entity.start, entity.end);
+        // Sprawdź czy kliknięto w obrębie odcinka (t 0-1) i blisko niego
+        if (proj.t >= 0 && proj.t <= 1 && proj.dist < minD) {
+          minD = proj.dist;
+          closestId = entity.id;
+        }
+      }
+    }
+
+    if (closestId) {
+      this.sketcher.trimEntity(closestId, point);
+    }
+  }
+}
+
+/**
+ * Narzędzie Extend (Wydłuż)
+ */
+export class ExtendTool extends SketchTool {
+  reset(): void {}
+  handleMouseMove(event: MouseEvent): void {}
+  handleRightClick(event: MouseEvent): void { this.deactivate(); }
+  handleKeyDown(event: KeyboardEvent): void { if(event.key === 'Escape') this.deactivate(); }
+
+  handleClick(event: MouseEvent): void {
+    if (!this.isActive || !this.sketcher) return;
+    const point = this.screenToPlane(event.clientX, event.clientY);
+    if (!point) return;
+
+    let closestId: string | null = null;
+    let minD = 10;
+
+    for (const entity of this.sketcher.getEntities()) {
+      if (entity.type === 'line') {
+        const proj = SketchMath.projectPointOnLine(point, entity.start, entity.end);
+        if (proj.t >= 0 && proj.t <= 1 && proj.dist < minD) {
+          minD = proj.dist;
+          closestId = entity.id;
+        }
+      }
+    }
+
+    if (closestId) {
+      this.sketcher.extendEntity(closestId, point);
+    }
+  }
+}
+
+
+/**
+ * Narzędzie Offset (Odsuń)
+ */
+export class OffsetTool extends SketchTool {
+  private selectedId: string | null = null;
+
+  reset(): void { this.selectedId = null; }
+  handleMouseMove(event: MouseEvent): void {}
+  handleRightClick(event: MouseEvent): void { this.reset(); }
+  handleKeyDown(event: KeyboardEvent): void { if(event.key === 'Escape') this.reset(); }
+
+  handleClick(event: MouseEvent): void {
+    if (!this.isActive || !this.sketcher) return;
+    const point = this.screenToPlane(event.clientX, event.clientY);
+    if (!point) return;
+
+    if (!this.selectedId) {
+      // KROK 1: Wybierz linię do odsunięcia
+      let minD = 10;
+      for (const entity of this.sketcher.getEntities()) {
+        if (entity.type === 'line') {
+          const proj = SketchMath.projectPointOnLine(point, entity.start, entity.end);
+          if (proj.t >= 0 && proj.t <= 1 && proj.dist < minD) {
+            minD = proj.dist;
+            this.selectedId = entity.id;
+          }
+        }
+      }
+      if(this.selectedId) console.log("Offset: Wybrano linię. Kliknij teraz, aby wskazać kierunek i odległość.");
+    } else {
+      // KROK 2: Wykonaj odsunięcie
+      const target = this.sketcher.getEntity(this.selectedId);
+      if (target && target.type === 'line') {
+        // Dystans obliczamy jako odległość kliknięcia od linii
+        const proj = SketchMath.projectPointOnLine(point, target.start, target.end);
+        if (proj.dist > 0.1) {
+          this.sketcher.offsetEntity(this.selectedId, proj.dist, point);
+          this.selectedId = null; // Reset po operacji
+        }
+      }
+    }
+  }
+}
+

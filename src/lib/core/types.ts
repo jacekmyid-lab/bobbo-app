@@ -661,6 +661,10 @@ export type ToolType =
   | 'sketch-circle'
   | 'sketch-arc'
   | 'sketch-spline'
+  | 'sketch-trim'
+  | 'sketch-extend'
+  | 'sketch-offset'
+
   // Feature tools
   | 'extrude'
   | 'revolve'

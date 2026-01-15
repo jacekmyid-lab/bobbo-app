@@ -22,7 +22,7 @@
   import SketchToolInstructions from './SketchToolInstructions.svelte';
   import { useViewportInteraction } from './viewportInteraction';
   import { useCameraAnimation } from './cameraAnimation';
-  import { PolylineTool, LineTool, CircleTool, RectangleTool } from './sketchTools';
+  import { PolylineTool, LineTool, CircleTool, RectangleTool, TrimTool, ExtendTool, OffsetTool } from './sketchTools';
   import { createSketcher } from '$lib/sketcher/Sketcher';
   import type { SketchEntity } from '$lib/core/types';
 
@@ -116,6 +116,9 @@
         case 'sketch-line': tool = new LineTool(canvas, camera, sketcher, plane); break;
         case 'sketch-circle': tool = new CircleTool(canvas, camera, sketcher, plane); break;
         case 'sketch-rectangle': tool = new RectangleTool(canvas, camera, sketcher, plane); break;
+        case 'sketch-trim': tool = new TrimTool(canvas, camera, sketcher, plane); break;
+        case 'sketch-extend': tool = new ExtendTool(canvas, camera, sketcher, plane); break;
+        case 'sketch-offset': tool = new OffsetTool(canvas, camera, sketcher, plane); break;
       }
       
       if (tool) {

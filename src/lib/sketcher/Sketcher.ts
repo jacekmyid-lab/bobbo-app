@@ -31,6 +31,7 @@ import type {
   Result
 } from '../core/types';
 import { generateId } from '../stores/cadStore';
+import { SketchMath } from '../geometry/SketchMath';
 
 /**
  * Tolerance for point coincidence detection
@@ -653,6 +654,147 @@ export class Sketcher {
     // For now, just return false - real constraint solving is complex
     return false;
   }
+
+// --- POCZĄTEK NOWYCH METOD
+
+  /**
+   * TRIM: Utnij linię w miejscu kliknięcia do najbliższych przecięć z innymi obiektami.
+   */
+  trimEntity(targetId: string, clickPoint: Point2D): void {
+    const target = this.entities.get(targetId);
+    // Obecnie obsługujemy przycinanie tylko linii
+    if (!target || target.type !== 'line') return;
+
+    const intersections: number[] = [];
+    
+    // 1. Znajdź przecięcia z wszystkimi innymi liniami
+    for (const other of this.entities.values()) {
+      if (other.id === targetId) continue;
+      if (other.type === 'line') {
+        const result = SketchMath.intersectLineLine(target.start, target.end, other.start, other.end);
+        // Interesują nas przecięcia wewnątrz "innej" linii (u w zakresie 0-1)
+        if (result && result.u >= 0 && result.u <= 1) {
+          intersections.push(result.t);
+        }
+      }
+      // Tu w przyszłości można dodać obsługę okręgów/łuków
+    }
+
+    // Dodaj końce odcinka (t=0 i t=1)
+    intersections.push(0, 1);
+    // Posortuj i usuń duplikaty
+    const sortedT = Array.from(new Set(intersections)).sort((a, b) => a - b);
+
+    // 2. Znajdź gdzie kliknął użytkownik (parametr t na linii)
+    const proj = SketchMath.projectPointOnLine(clickPoint, target.start, target.end);
+    const clickT = Math.max(0, Math.min(1, proj.t));
+
+    // 3. Znajdź segment, w który kliknięto i usuń go
+    for (let i = 0; i < sortedT.length - 1; i++) {
+      if (clickT >= sortedT[i] && clickT <= sortedT[i+1]) {
+        // Usuń starą linię
+        this.removeEntity(targetId);
+        
+        const tStart = sortedT[i];
+        const tEnd = sortedT[i+1];
+
+        // Odtwórz segment przed wycięciem (jeśli nie jest zerowej długości)
+        if (tStart > 0.001) {
+          const pEnd = {
+            x: target.start.x + tStart * (target.end.x - target.start.x),
+            y: target.start.y + tStart * (target.end.y - target.start.y)
+          };
+          this.addEntity(SketchEntityFactory.line(target.start, pEnd));
+        }
+        // Odtwórz segment za wycięciem
+        if (tEnd < 0.999) {
+          const pStart = {
+            x: target.start.x + tEnd * (target.end.x - target.start.x),
+            y: target.start.y + tEnd * (target.end.y - target.start.y)
+          };
+          this.addEntity(SketchEntityFactory.line(pStart, target.end));
+        }
+        return; // Zakończ po znalezieniu segmentu
+      }
+    }
+  }
+
+
+/**
+   * EXTEND: Wydłuż linię do najbliższej prostej w kierunku końca bliższego kliknięciu.
+   */
+extendEntity(targetId: string, clickPoint: Point2D): void {
+  const target = this.entities.get(targetId);
+  if (!target || target.type !== 'line') return;
+
+  // Sprawdź który koniec jest bliżej kliknięcia (Start czy End)
+  const dStart = SketchMath.distance(clickPoint, target.start);
+  const dEnd = SketchMath.distance(clickPoint, target.end);
+  const extendStart = dStart < dEnd;
+
+  let bestT: number | null = null;
+  let minDiff = Infinity;
+
+  // Szukaj przecięcia na przedłużeniu linii
+  for (const other of this.entities.values()) {
+    if (other.id === targetId) continue;
+    if (other.type === 'line') {
+      const result = SketchMath.intersectLineLine(target.start, target.end, other.start, other.end);
+      // Przecięcie musi być na "innej" linii
+      if (result && result.u >= 0 && result.u <= 1) {
+        const t = result.t;
+        // Jeśli wydłużamy Start, szukamy t < 0. Jeśli End, szukamy t > 1
+        if (extendStart && t < -0.001) {
+          if (Math.abs(t) < minDiff) { minDiff = Math.abs(t); bestT = t; }
+        } else if (!extendStart && t > 1.001) {
+          const diff = t - 1;
+          if (diff < minDiff) { minDiff = diff; bestT = t; }
+        }
+      }
+    }
+  }
+
+  // Jeśli znaleziono punkt docelowy, zaktualizuj linię
+  if (bestT !== null) {
+    const newPoint = {
+      x: target.start.x + bestT * (target.end.x - target.start.x),
+      y: target.start.y + bestT * (target.end.y - target.start.y)
+    };
+    if (extendStart) this.updateEntity(targetId, { start: newPoint });
+    else this.updateEntity(targetId, { end: newPoint });
+  }
+}
+
+/**
+   * OFFSET: Odsuń linię o zadaną odległość w stronę wskazaną kliknięciem.
+   */
+offsetEntity(targetId: string, distance: number, sidePoint: Point2D): void {
+  const target = this.entities.get(targetId);
+  if (!target || target.type !== 'line') return;
+
+  const normal = SketchMath.getNormal2D(target.start, target.end);
+  
+  // Sprawdź dwa potencjalne kierunki odsunięcia (lewo/prawo)
+  const pTestPos = { x: target.start.x + normal.x * distance, y: target.start.y + normal.y * distance };
+  const pTestNeg = { x: target.start.x - normal.x * distance, y: target.start.y - normal.y * distance };
+  
+  // Wybierz ten, który jest bliżej punktu kliknięcia (sidePoint)
+  const distPos = SketchMath.distance(pTestPos, sidePoint);
+  const distNeg = SketchMath.distance(pTestNeg, sidePoint);
+  
+  const finalOffset = distPos < distNeg 
+    ? { x: normal.x * distance, y: normal.y * distance }
+    : { x: -normal.x * distance, y: -normal.y * distance };
+
+  // Utwórz nową linię
+  const newStart = { x: target.start.x + finalOffset.x, y: target.start.y + finalOffset.y };
+  const newEnd = { x: target.end.x + finalOffset.x, y: target.end.y + finalOffset.y };
+
+  this.addEntity(SketchEntityFactory.line(newStart, newEnd));
+}
+
+// --- KONIEC NOWYCH METOD ---
+
 
   /**
    * Clear all entities and constraints
