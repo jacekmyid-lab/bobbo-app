@@ -1,11 +1,3 @@
-<!--
-  Viewport.svelte - FULLY FIXED
-  ✅ Double-click model activation
-  ✅ Topology selection after activation
-  ✅ Ortho camera in sketch mode with locked rotation
-  ✅ Grid 1:1 scaling with model
-  ✅ ESC exits active model
--->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Canvas, T } from '@threlte/core';
@@ -53,7 +45,7 @@
   let sketcher = $state<any>(null);
   let currentToolType = $derived($toolStore.activeTool);
   
-  // Create tool instance based on currentToolType - NO $effect, just $derived
+  // Active tool instance
   let activeTool = $derived.by(() => {
     if (!isSketchMode || !sketcher || !currentToolType.startsWith('sketch-')) {
       return null;
@@ -96,7 +88,6 @@
   // Camera animation
   const cameraAnim = useCameraAnimation(planes, () => solids);
   
-  // Use $state with stores
   let animating = $state(false);
   let sketchBasis = $state<any>(null);
 
@@ -106,14 +97,14 @@
       const plane = planes.get(sketchPlaneId);
       if (plane) {
         sketcher = createSketcher($sketchEditStore.sketchId || 'temp', plane);
-        console.log('[Viewport] Sketcher created');
+        console.log('[Viewport] Sketcher created for plane:', plane.name);
       }
     } else if (!isSketchMode) {
       sketcher = null;
     }
   });
 
-  // Viewport interaction - pass getSolids function
+  // Viewport interaction
   const {
     handleMouseMove,
     handleClick,
@@ -130,8 +121,10 @@
   // Handle sketch mode changes
   $effect(() => {
     if (isSketchMode && sketchPlaneId) {
+      console.log('[Viewport] Entering sketch mode...');
       cameraAnim.enterSketchMode(sketchPlaneId, camera, controls);
     } else if (!isSketchMode && cameraAnim.savedCameraState) {
+      console.log('[Viewport] Exiting sketch mode...');
       cameraAnim.exitSketchMode(camera, controls);
     }
   });
@@ -149,6 +142,8 @@
   }
 
   onMount(() => {
+    console.log('[Viewport] Component mounted');
+    
     // Subscribe to camera animation stores
     const unsubAnim = cameraAnim.animatingStore.subscribe(v => { animating = v; });
     const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { 
@@ -160,42 +155,38 @@
 
     const canvas = canvasContainer?.querySelector('canvas');
     
-    // Sketch event handlers - use function references that check activeTool internally
+    // FIXED: Sketch event handlers with proper event flow
     const sketchMouseMove = (e: MouseEvent) => {
-      const tool = activeTool; // Get current tool
-      if (tool && isSketchMode) {
-        tool.handleMouseMove(e);
-      }
+      if (!activeTool || !isSketchMode) return;
+      // Don't stop propagation - let viewport interaction handle it first
+      activeTool.handleMouseMove(e);
     };
     
     const sketchClick = (e: MouseEvent) => {
-      const tool = activeTool;
-      if (tool && isSketchMode) {
-        e.stopPropagation();
-        tool.handleClick(e);
-      }
+      if (!activeTool || !isSketchMode) return;
+      console.log('[Viewport] Sketch click at:', e.clientX, e.clientY);
+      e.stopPropagation(); // Stop propagation for sketch clicks
+      activeTool.handleClick(e);
     };
     
     const sketchRightClick = (e: MouseEvent) => {
-      const tool = activeTool;
-      if (tool && isSketchMode) {
-        e.preventDefault();
-        e.stopPropagation();
-        tool.handleRightClick(e);
-      }
+      if (!activeTool || !isSketchMode) return;
+      console.log('[Viewport] Sketch right-click');
+      e.preventDefault();
+      e.stopPropagation();
+      activeTool.handleRightClick(e);
     };
     
     const sketchKeyDown = (e: KeyboardEvent) => {
-      const tool = activeTool;
-      if (tool && isSketchMode) {
-        tool.handleKeyDown(e);
-      }
+      if (!activeTool || !isSketchMode) return;
+      activeTool.handleKeyDown(e);
     };
 
     if (canvas) {
-      canvas.addEventListener('mousemove', sketchMouseMove);
-      canvas.addEventListener('click', sketchClick, true);
-      canvas.addEventListener('contextmenu', sketchRightClick);
+      // Use capture phase for sketch events to get priority
+      canvas.addEventListener('mousemove', sketchMouseMove, false);
+      canvas.addEventListener('click', sketchClick, true); // Capture phase
+      canvas.addEventListener('contextmenu', sketchRightClick, true); // Capture phase
     }
     window.addEventListener('keydown', sketchKeyDown);
 
@@ -213,9 +204,9 @@
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keydown', sketchKeyDown);
       if (canvas) {
-        canvas.removeEventListener('mousemove', sketchMouseMove);
+        canvas.removeEventListener('mousemove', sketchMouseMove, false);
         canvas.removeEventListener('click', sketchClick, true);
-        canvas.removeEventListener('contextmenu', sketchRightClick);
+        canvas.removeEventListener('contextmenu', sketchRightClick, true);
       }
       cancelAnimationFrame(animFrame);
     };
@@ -309,6 +300,7 @@
       <T.GridHelper args={[200, 20, 0x2563eb, 0x1e3a5f]} />
     {/if}
 
+    <!-- FIXED: Grid rendering in sketch mode -->
     {#if isSketchMode && sketchBasis}
       <SketchGrid basis={sketchBasis} />
       
@@ -317,14 +309,6 @@
         {#if plane}
           <SketchPreview tool={activeTool} {plane} toolType={currentToolType} />
         {/if}
-      {/if}
-    {:else}
-      <!-- Debug: show when sketch mode but no basis -->
-      {#if isSketchMode && !sketchBasis}
-        <T.Mesh position={[0, 0, 0]}>
-          <T.SphereGeometry args={[5, 16, 16]} />
-          <T.MeshBasicMaterial color="#ff0000" />
-        </T.Mesh>
       {/if}
     {/if}
 
