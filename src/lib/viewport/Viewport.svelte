@@ -41,49 +41,10 @@
   let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
   let controls: any = null;
 
-  // Sketch tools
+  // Sketch tools - używamy $state ale BEZ reaktywności na currentToolType
   let sketcher = $state<any>(null);
-  let currentToolType = $derived($toolStore.activeTool);
-  
-  // Active tool instance
-  let activeTool = $derived.by(() => {
-    if (!isSketchMode || !sketcher || !currentToolType.startsWith('sketch-')) {
-      return null;
-    }
-
-    const plane = sketchPlaneId ? planes.get(sketchPlaneId) : null;
-    if (!plane) {
-      console.warn('[Viewport] No plane found for sketch');
-      return null;
-    }
-
-    const canvas = canvasContainer?.querySelector('canvas') || null;
-    
-    console.log('[Viewport] Creating tool:', currentToolType);
-    
-    let tool: PolylineTool | LineTool | CircleTool | RectangleTool | null = null;
-    
-    switch (currentToolType) {
-      case 'sketch-polyline':
-        tool = new PolylineTool(canvas, camera, sketcher, plane);
-        break;
-      case 'sketch-line':
-        tool = new LineTool(canvas, camera, sketcher, plane);
-        break;
-      case 'sketch-circle':
-        tool = new CircleTool(canvas, camera, sketcher, plane);
-        break;
-      case 'sketch-rectangle':
-        tool = new RectangleTool(canvas, camera, sketcher, plane);
-        break;
-    }
-    
-    if (tool) {
-      tool.activate();
-    }
-    
-    return tool;
-  });
+  let currentToolType = $state<string>('');
+  let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
 
   // Camera animation
   const cameraAnim = useCameraAnimation(planes, () => solids);
@@ -91,16 +52,86 @@
   let animating = $state(false);
   let sketchBasis = $state<any>(null);
 
-  // Initialize sketcher when entering sketch mode
+  // ✅ FIX 1: Initialize sketcher when entering sketch mode
   $effect(() => {
     if (isSketchMode && sketchPlaneId && !sketcher) {
       const plane = planes.get(sketchPlaneId);
       if (plane) {
         sketcher = createSketcher($sketchEditStore.sketchId || 'temp', plane);
-        console.log('[Viewport] Sketcher created for plane:', plane.name);
+        console.log('[Viewport] ✅ Sketcher created for plane:', plane.name);
       }
     } else if (!isSketchMode) {
       sketcher = null;
+      activeTool = null;
+      currentToolType = '';
+    }
+  });
+
+  // ✅ FIX 2: Create tool TYLKO gdy zmieni się toolType i istnieje sketcher
+  // Używamy manualnego śledzenia poprzedniej wartości
+  $effect(() => {
+    const newToolType = $toolStore.activeTool;
+    
+    // Tylko gdy jesteśmy w sketch mode i mamy sketcher
+    if (!isSketchMode || !sketcher || !sketchPlaneId) {
+      if (activeTool) {
+        console.log('[Viewport] 🛑 Deactivating tool - exiting sketch mode');
+        activeTool.deactivate();
+        activeTool = null;
+        currentToolType = '';
+      }
+      return;
+    }
+
+    // Tylko gdy tool TYPE się zmienił
+    if (newToolType === currentToolType) {
+      return; // Bez zmian - nie rób nic
+    }
+
+    // Deactivate old tool
+    if (activeTool) {
+      console.log('[Viewport] 🔄 Deactivating old tool:', currentToolType);
+      activeTool.deactivate();
+      activeTool = null;
+    }
+
+    // Create new tool tylko dla sketch tools
+    if (newToolType.startsWith('sketch-')) {
+      const plane = planes.get(sketchPlaneId);
+      if (!plane) {
+        console.warn('[Viewport] No plane found for sketch');
+        return;
+      }
+
+      const canvas = canvasContainer?.querySelector('canvas') || null;
+      
+      console.log('[Viewport] 🔧 Creating tool:', newToolType);
+      
+      let tool: PolylineTool | LineTool | CircleTool | RectangleTool | null = null;
+      
+      switch (newToolType) {
+        case 'sketch-polyline':
+          tool = new PolylineTool(canvas, camera, sketcher, plane);
+          break;
+        case 'sketch-line':
+          tool = new LineTool(canvas, camera, sketcher, plane);
+          break;
+        case 'sketch-circle':
+          tool = new CircleTool(canvas, camera, sketcher, plane);
+          break;
+        case 'sketch-rectangle':
+          tool = new RectangleTool(canvas, camera, sketcher, plane);
+          break;
+      }
+      
+      if (tool) {
+        tool.activate();
+        activeTool = tool;
+        currentToolType = newToolType;
+        console.log('[Viewport] ✅ Tool activated:', newToolType);
+      }
+    } else {
+      currentToolType = '';
     }
   });
 
@@ -118,13 +149,13 @@
     () => solids
   );
 
-  // Handle sketch mode changes
+  // ✅ FIX 3: Handle sketch mode changes - TYLKO dla kamery
   $effect(() => {
-    if (isSketchMode && sketchPlaneId) {
-      console.log('[Viewport] Entering sketch mode...');
+    if (isSketchMode && sketchPlaneId && camera && controls) {
+      console.log('[Viewport] 📷 Entering sketch mode - animating camera...');
       cameraAnim.enterSketchMode(sketchPlaneId, camera, controls);
-    } else if (!isSketchMode && cameraAnim.savedCameraState) {
-      console.log('[Viewport] Exiting sketch mode...');
+    } else if (!isSketchMode && cameraAnim.savedCameraState && camera && controls) {
+      console.log('[Viewport] 📷 Exiting sketch mode - restoring camera...');
       cameraAnim.exitSketchMode(camera, controls);
     }
   });
@@ -148,30 +179,28 @@
     const unsubAnim = cameraAnim.animatingStore.subscribe(v => { animating = v; });
     const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { 
       sketchBasis = v;
-      console.log('[Viewport] Sketch basis updated:', v ? 'present' : 'null');
     });
     
     window.addEventListener('keydown', handleKeyDown);
 
     const canvas = canvasContainer?.querySelector('canvas');
     
-    // FIXED: Sketch event handlers with proper event flow
+    // ✅ FIX 4: Sketch event handlers - poprawione
     const sketchMouseMove = (e: MouseEvent) => {
       if (!activeTool || !isSketchMode) return;
-      // Don't stop propagation - let viewport interaction handle it first
       activeTool.handleMouseMove(e);
     };
     
     const sketchClick = (e: MouseEvent) => {
       if (!activeTool || !isSketchMode) return;
-      console.log('[Viewport] Sketch click at:', e.clientX, e.clientY);
-      e.stopPropagation(); // Stop propagation for sketch clicks
+      console.log('[Viewport] 🖱️ Sketch click');
+      e.stopPropagation();
       activeTool.handleClick(e);
     };
     
     const sketchRightClick = (e: MouseEvent) => {
       if (!activeTool || !isSketchMode) return;
-      console.log('[Viewport] Sketch right-click');
+      console.log('[Viewport] 🖱️ Sketch right-click');
       e.preventDefault();
       e.stopPropagation();
       activeTool.handleRightClick(e);
@@ -183,10 +212,9 @@
     };
 
     if (canvas) {
-      // Use capture phase for sketch events to get priority
       canvas.addEventListener('mousemove', sketchMouseMove, false);
-      canvas.addEventListener('click', sketchClick, true); // Capture phase
-      canvas.addEventListener('contextmenu', sketchRightClick, true); // Capture phase
+      canvas.addEventListener('click', sketchClick, true);
+      canvas.addEventListener('contextmenu', sketchRightClick, true);
     }
     window.addEventListener('keydown', sketchKeyDown);
 
@@ -300,7 +328,7 @@
       <T.GridHelper args={[200, 20, 0x2563eb, 0x1e3a5f]} />
     {/if}
 
-    <!-- FIXED: Grid rendering in sketch mode -->
+    <!-- ✅ FIXED: Grid rendering in sketch mode -->
     {#if isSketchMode && sketchBasis}
       <SketchGrid basis={sketchBasis} />
       

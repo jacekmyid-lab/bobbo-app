@@ -1,9 +1,8 @@
 /**
- * sketchTools.ts - FIXED
- * Manager for all sketch drawing tools
- * ✅ Safe null checks
- * ✅ Proper initialization
- * ✅ No infinite loops
+ * sketchTools.ts - FIXED with debug logging
+ * ✅ Proper coordinate conversion
+ * ✅ Debug logs for troubleshooting
+ * ✅ Clear event handling
  */
 
 import * as THREE from 'three';
@@ -30,6 +29,13 @@ export abstract class SketchTool {
     this.camera = camera;
     this.sketcher = sketcher;
     this.plane = plane;
+    
+    console.log('[SketchTool] Initialized:', {
+      hasCanvas: !!canvas,
+      hasCamera: !!camera,
+      hasSketcher: !!sketcher,
+      hasPlane: !!plane
+    });
   }
 
   /**
@@ -37,54 +43,87 @@ export abstract class SketchTool {
    */
   protected screenToPlane(screenX: number, screenY: number): Point2D | null {
     if (!this.canvas || !this.camera || !this.plane) {
-      console.warn('[SketchTool] Missing canvas, camera, or plane');
+      console.warn('[SketchTool] screenToPlane failed - missing:', {
+        canvas: !!this.canvas,
+        camera: !!this.camera,
+        plane: !!this.plane
+      });
       return null;
     }
 
+    // Get canvas bounding rect
     const rect = this.canvas.getBoundingClientRect();
+    
+    // Convert to NDC (Normalized Device Coordinates)
     const x = ((screenX - rect.left) / rect.width) * 2 - 1;
     const y = -((screenY - rect.top) / rect.height) * 2 + 1;
 
+    console.log('[SketchTool] Screen to NDC:', {
+      screen: { x: screenX, y: screenY },
+      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+      ndc: { x, y }
+    });
+
+    // Create raycaster
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(x, y), this.camera);
 
+    // Create THREE.js plane
     const planeNormal = new THREE.Vector3(
       this.plane.normal.x,
       this.plane.normal.y,
       this.plane.normal.z
-    );
+    ).normalize();
+    
     const planeOrigin = new THREE.Vector3(
       this.plane.origin.x,
       this.plane.origin.y,
       this.plane.origin.z
     );
+    
     const threePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(
       planeNormal,
       planeOrigin
     );
 
+    // Intersect ray with plane
     const intersect = new THREE.Vector3();
     const hit = raycaster.ray.intersectPlane(threePlane, intersect);
 
-    if (!hit) return null;
+    if (!hit) {
+      console.warn('[SketchTool] Ray did not intersect plane');
+      return null;
+    }
 
+    console.log('[SketchTool] Ray hit plane at:', {
+      x: hit.x,
+      y: hit.y,
+      z: hit.z
+    });
+
+    // Convert to plane local coordinates
     const xAxis = new THREE.Vector3(
       this.plane.xAxis.x,
       this.plane.xAxis.y,
       this.plane.xAxis.z
-    );
+    ).normalize();
+    
     const yAxis = new THREE.Vector3(
       this.plane.yAxis.x,
       this.plane.yAxis.y,
       this.plane.yAxis.z
-    );
+    ).normalize();
     
-    const localVec = intersect.clone().sub(planeOrigin);
+    const localVec = hit.clone().sub(planeOrigin);
     
-    return {
+    const result = {
       x: localVec.dot(xAxis),
       y: localVec.dot(yAxis)
     };
+
+    console.log('[SketchTool] 🎯 Plane coords:', result);
+    
+    return result;
   }
 
   /**
@@ -92,7 +131,7 @@ export abstract class SketchTool {
    */
   activate(): void {
     this.isActive = true;
-    console.log(`[${this.constructor.name}] Activated`);
+    console.log(`[${this.constructor.name}] ✅ Activated`);
   }
 
   /**
@@ -101,7 +140,7 @@ export abstract class SketchTool {
   deactivate(): void {
     this.isActive = false;
     this.reset();
-    console.log(`[${this.constructor.name}] Deactivated`);
+    console.log(`[${this.constructor.name}] ❌ Deactivated`);
   }
 
   /**
@@ -141,7 +180,7 @@ export class PolylineTool extends SketchTool {
   reset(): void {
     this.points = [];
     this.currentPoint = null;
-    console.log('[PolylineTool] Reset');
+    console.log('[PolylineTool] 🔄 Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -155,35 +194,35 @@ export class PolylineTool extends SketchTool {
 
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) {
-      console.warn('[PolylineTool] Not active or no sketcher');
+      console.warn('[PolylineTool] ⚠️ Not active or no sketcher');
       return;
     }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
     if (!point) {
-      console.warn('[PolylineTool] Could not convert screen to plane');
+      console.warn('[PolylineTool] ⚠️ Could not convert to plane coords');
       return;
     }
 
     if (this.points.length === 0) {
       // Start new polyline
       this.points.push(point);
-      console.log('[PolylineTool] Started polyline at', point);
+      console.log('[PolylineTool] ▶️ Started polyline at', point);
     } else if (this.canClose()) {
       // Close the polyline
-      console.log('[PolylineTool] Closing polyline');
+      console.log('[PolylineTool] 🔒 Closing polyline');
       this.finishPolyline(true);
     } else {
       // Add point
       this.points.push(this.snapToFirstPoint(point));
-      console.log('[PolylineTool] Added point', point, 'total:', this.points.length);
+      console.log('[PolylineTool] ➕ Added point', point, 'total:', this.points.length);
     }
   }
 
   handleRightClick(event: MouseEvent): void {
     if (!this.isActive || this.points.length < 2) return;
     event.preventDefault();
-    console.log('[PolylineTool] Right-click: finishing open polyline');
+    console.log('[PolylineTool] ⏹️ Right-click: finishing open polyline');
     this.finishPolyline(false);
   }
 
@@ -192,19 +231,19 @@ export class PolylineTool extends SketchTool {
 
     switch (event.key) {
       case 'Escape':
-        console.log('[PolylineTool] ESC: canceling');
+        console.log('[PolylineTool] ⛔ ESC: canceling');
         this.reset();
         break;
       case 'Enter':
         if (this.points.length >= 2) {
-          console.log('[PolylineTool] ENTER: closing polyline');
+          console.log('[PolylineTool] ✅ ENTER: closing polyline');
           this.finishPolyline(true);
         }
         break;
       case 'Backspace':
         if (this.points.length > 0) {
           this.points.pop();
-          console.log('[PolylineTool] BACKSPACE: removed point, remaining:', this.points.length);
+          console.log('[PolylineTool] ⬅️ BACKSPACE: removed point, remaining:', this.points.length);
           if (this.points.length === 0) {
             this.reset();
           }
@@ -239,23 +278,23 @@ export class PolylineTool extends SketchTool {
 
   private finishPolyline(closed: boolean): void {
     if (!this.sketcher || this.points.length < 2) {
-      console.warn('[PolylineTool] Cannot finish: no sketcher or too few points');
+      console.warn('[PolylineTool] ⚠️ Cannot finish: no sketcher or too few points');
       return;
     }
 
     try {
       const entity = SketchEntityFactory.polyline(this.points, closed);
       this.sketcher.addEntity(entity);
-      console.log(`[PolylineTool] Created ${closed ? 'closed' : 'open'} polyline with ${this.points.length} points`);
+      console.log(`[PolylineTool] ✅ Created ${closed ? 'closed' : 'open'} polyline with ${this.points.length} points`);
 
       if (closed) {
         const profiles = this.sketcher.detectProfiles();
-        console.log(`[PolylineTool] Detected ${profiles.length} profile(s)`);
+        console.log(`[PolylineTool] 📐 Detected ${profiles.length} profile(s)`);
       }
 
       this.reset();
     } catch (error) {
-      console.error('[PolylineTool] Error creating polyline:', error);
+      console.error('[PolylineTool] ❌ Error creating polyline:', error);
     }
   }
 
@@ -282,7 +321,7 @@ export class LineTool extends SketchTool {
   reset(): void {
     this.startPoint = null;
     this.endPoint = null;
-    console.log('[LineTool] Reset');
+    console.log('[LineTool] 🔄 Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -296,30 +335,30 @@ export class LineTool extends SketchTool {
 
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) {
-      console.warn('[LineTool] Not active or no sketcher');
+      console.warn('[LineTool] ⚠️ Not active or no sketcher');
       return;
     }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
     if (!point) {
-      console.warn('[LineTool] Could not convert screen to plane');
+      console.warn('[LineTool] ⚠️ Could not convert to plane coords');
       return;
     }
 
     if (!this.startPoint) {
       this.startPoint = point;
-      console.log('[LineTool] Set start point', point);
+      console.log('[LineTool] ▶️ Set start point', point);
     } else {
       this.endPoint = point;
-      console.log('[LineTool] Set end point', point);
+      console.log('[LineTool] ⏹️ Set end point', point);
       
       try {
         const entity = SketchEntityFactory.line(this.startPoint, this.endPoint);
         this.sketcher.addEntity(entity);
-        console.log('[LineTool] Created line');
+        console.log('[LineTool] ✅ Created line');
         this.reset();
       } catch (error) {
-        console.error('[LineTool] Error creating line:', error);
+        console.error('[LineTool] ❌ Error creating line:', error);
       }
     }
   }
@@ -354,7 +393,7 @@ export class CircleTool extends SketchTool {
   reset(): void {
     this.center = null;
     this.radius = 0;
-    console.log('[CircleTool] Reset');
+    console.log('[CircleTool] 🔄 Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -371,27 +410,27 @@ export class CircleTool extends SketchTool {
 
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) {
-      console.warn('[CircleTool] Not active or no sketcher');
+      console.warn('[CircleTool] ⚠️ Not active or no sketcher');
       return;
     }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
     if (!point) {
-      console.warn('[CircleTool] Could not convert screen to plane');
+      console.warn('[CircleTool] ⚠️ Could not convert to plane coords');
       return;
     }
 
     if (!this.center) {
       this.center = point;
-      console.log('[CircleTool] Set center', point);
+      console.log('[CircleTool] ▶️ Set center', point);
     } else {
       if (this.radius > 0.1) {
         try {
           const entity = SketchEntityFactory.circle(this.center, this.radius);
           this.sketcher.addEntity(entity);
-          console.log('[CircleTool] Created circle, radius:', this.radius);
+          console.log('[CircleTool] ✅ Created circle, radius:', this.radius);
         } catch (error) {
-          console.error('[CircleTool] Error creating circle:', error);
+          console.error('[CircleTool] ❌ Error creating circle:', error);
         }
       }
       this.reset();
@@ -428,7 +467,7 @@ export class RectangleTool extends SketchTool {
   reset(): void {
     this.corner = null;
     this.oppositeCorner = null;
-    console.log('[RectangleTool] Reset');
+    console.log('[RectangleTool] 🔄 Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -442,19 +481,19 @@ export class RectangleTool extends SketchTool {
 
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) {
-      console.warn('[RectangleTool] Not active or no sketcher');
+      console.warn('[RectangleTool] ⚠️ Not active or no sketcher');
       return;
     }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
     if (!point) {
-      console.warn('[RectangleTool] Could not convert screen to plane');
+      console.warn('[RectangleTool] ⚠️ Could not convert to plane coords');
       return;
     }
 
     if (!this.corner) {
       this.corner = point;
-      console.log('[RectangleTool] Set corner', point);
+      console.log('[RectangleTool] ▶️ Set corner', point);
     } else {
       this.oppositeCorner = point;
       const width = this.oppositeCorner.x - this.corner.x;
@@ -464,9 +503,9 @@ export class RectangleTool extends SketchTool {
         try {
           const entity = SketchEntityFactory.rectangle(this.corner, width, height);
           this.sketcher.addEntity(entity);
-          console.log('[RectangleTool] Created rectangle', width, 'x', height);
+          console.log('[RectangleTool] ✅ Created rectangle', width, 'x', height);
         } catch (error) {
-          console.error('[RectangleTool] Error creating rectangle:', error);
+          console.error('[RectangleTool] ❌ Error creating rectangle:', error);
         }
       }
       this.reset();
@@ -490,15 +529,5 @@ export class RectangleTool extends SketchTool {
 
   getOppositeCorner(): Point2D | null {
     return this.oppositeCorner;
-  }
-
-  getWidth(): number {
-    if (!this.corner || !this.oppositeCorner) return 0;
-    return this.oppositeCorner.x - this.corner.x;
-  }
-
-  getHeight(): number {
-    if (!this.corner || !this.oppositeCorner) return 0;
-    return this.oppositeCorner.y - this.corner.y;
   }
 }
