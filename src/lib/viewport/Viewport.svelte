@@ -41,7 +41,7 @@
   let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
   let controls: any = null;
 
-  // Sketch tools - używamy $state ale BEZ reaktywności na currentToolType
+  // Sketch tools
   let sketcher = $state<any>(null);
   let currentToolType = $state<string>('');
   let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
@@ -52,7 +52,7 @@
   let animating = $state(false);
   let sketchBasis = $state<any>(null);
 
-  // ✅ FIX 1: Initialize sketcher when entering sketch mode
+  // Initialize sketcher when entering sketch mode
   $effect(() => {
     if (isSketchMode && sketchPlaneId && !sketcher) {
       const plane = planes.get(sketchPlaneId);
@@ -67,12 +67,10 @@
     }
   });
 
-  // ✅ FIX 2: Create tool TYLKO gdy zmieni się toolType i istnieje sketcher
-  // Używamy manualnego śledzenia poprzedniej wartości
+  // Create tool when toolType changes
   $effect(() => {
     const newToolType = $toolStore.activeTool;
     
-    // Tylko gdy jesteśmy w sketch mode i mamy sketcher
     if (!isSketchMode || !sketcher || !sketchPlaneId) {
       if (activeTool) {
         console.log('[Viewport] 🛑 Deactivating tool - exiting sketch mode');
@@ -83,19 +81,16 @@
       return;
     }
 
-    // Tylko gdy tool TYPE się zmienił
     if (newToolType === currentToolType) {
-      return; // Bez zmian - nie rób nic
+      return;
     }
 
-    // Deactivate old tool
     if (activeTool) {
       console.log('[Viewport] 🔄 Deactivating old tool:', currentToolType);
       activeTool.deactivate();
       activeTool = null;
     }
 
-    // Create new tool tylko dla sketch tools
     if (newToolType.startsWith('sketch-')) {
       const plane = planes.get(sketchPlaneId);
       if (!plane) {
@@ -149,7 +144,7 @@
     () => solids
   );
 
-  // ✅ FIX 3: Handle sketch mode changes - TYLKO dla kamery
+  // Handle sketch mode camera changes
   $effect(() => {
     if (isSketchMode && sketchPlaneId && camera && controls) {
       console.log('[Viewport] 📷 Entering sketch mode - animating camera...');
@@ -172,6 +167,56 @@
     controls = ctrl;
   }
 
+  // ✅ POPRAWIONE: Unified event handler dla sketch i normalnego trybu
+  function handleCanvasClick(e: MouseEvent) {
+    if (isSketchMode && activeTool) {
+      // W trybie sketch - przekaż do narzędzia
+      console.log('[Viewport] 🖱️ Sketch click, tool:', currentToolType);
+      activeTool.handleClick(e);
+    } else {
+      // W normalnym trybie - przekaż do viewport interaction
+      handleClick(e);
+    }
+  }
+
+  function handleCanvasContextMenu(e: MouseEvent) {
+    if (isSketchMode && activeTool) {
+      // W trybie sketch - przekaż do narzędzia
+      console.log('[Viewport] 🖱️ Sketch right-click');
+      e.preventDefault();
+      e.stopPropagation();
+      activeTool.handleRightClick(e);
+    } else {
+      // W normalnym trybie
+      handleContextMenu(e);
+    }
+  }
+
+  function handleCanvasMouseMove(e: MouseEvent) {
+    if (isSketchMode && activeTool) {
+      // W trybie sketch - przekaż do narzędzia
+      activeTool.handleMouseMove(e);
+    } else {
+      // W normalnym trybie
+      handleMouseMove(e);
+    }
+  }
+
+  function handleCanvasDoubleClick(e: MouseEvent) {
+    if (!isSketchMode) {
+      handleDoubleClick(e);
+    }
+  }
+
+  function handleGlobalKeyDown(e: KeyboardEvent) {
+    if (isSketchMode && activeTool) {
+      // W trybie sketch - przekaż do narzędzia
+      activeTool.handleKeyDown(e);
+    }
+    // Zawsze też przekaż do viewport (dla ESC itp.)
+    handleKeyDown(e);
+  }
+
   onMount(() => {
     console.log('[Viewport] Component mounted');
     
@@ -181,42 +226,8 @@
       sketchBasis = v;
     });
     
-    window.addEventListener('keydown', handleKeyDown);
-
-    const canvas = canvasContainer?.querySelector('canvas');
-    
-    // ✅ FIX 4: Sketch event handlers - poprawione
-    const sketchMouseMove = (e: MouseEvent) => {
-      if (!activeTool || !isSketchMode) return;
-      activeTool.handleMouseMove(e);
-    };
-    
-    const sketchClick = (e: MouseEvent) => {
-      if (!activeTool || !isSketchMode) return;
-      console.log('[Viewport] 🖱️ Sketch click');
-      e.stopPropagation();
-      activeTool.handleClick(e);
-    };
-    
-    const sketchRightClick = (e: MouseEvent) => {
-      if (!activeTool || !isSketchMode) return;
-      console.log('[Viewport] 🖱️ Sketch right-click');
-      e.preventDefault();
-      e.stopPropagation();
-      activeTool.handleRightClick(e);
-    };
-    
-    const sketchKeyDown = (e: KeyboardEvent) => {
-      if (!activeTool || !isSketchMode) return;
-      activeTool.handleKeyDown(e);
-    };
-
-    if (canvas) {
-      canvas.addEventListener('mousemove', sketchMouseMove, false);
-      canvas.addEventListener('click', sketchClick, true);
-      canvas.addEventListener('contextmenu', sketchRightClick, true);
-    }
-    window.addEventListener('keydown', sketchKeyDown);
+    // Global keyboard handler
+    window.addEventListener('keydown', handleGlobalKeyDown);
 
     // Animation loop
     let animFrame: number;
@@ -229,13 +240,7 @@
     return () => {
       unsubAnim();
       unsubBasis();
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keydown', sketchKeyDown);
-      if (canvas) {
-        canvas.removeEventListener('mousemove', sketchMouseMove, false);
-        canvas.removeEventListener('click', sketchClick, true);
-        canvas.removeEventListener('contextmenu', sketchRightClick, true);
-      }
+      window.removeEventListener('keydown', handleGlobalKeyDown);
       cancelAnimationFrame(animFrame);
     };
   });
@@ -265,10 +270,10 @@
   class:sketch-mode={isSketchMode}
   class:has-active={activeModelId !== null}
   bind:this={canvasContainer}
-  onmousemove={handleMouseMove}
-  onclick={handleClick}
-  ondblclick={handleDoubleClick}
-  oncontextmenu={handleContextMenu}
+  onmousemove={handleCanvasMouseMove}
+  onclick={handleCanvasClick}
+  ondblclick={handleCanvasDoubleClick}
+  oncontextmenu={handleCanvasContextMenu}
   role="application"
   tabindex="0"
 >
@@ -328,7 +333,6 @@
       <T.GridHelper args={[200, 20, 0x2563eb, 0x1e3a5f]} />
     {/if}
 
-    <!-- ✅ FIXED: Grid rendering in sketch mode -->
     {#if isSketchMode && sketchBasis}
       <SketchGrid basis={sketchBasis} />
       
