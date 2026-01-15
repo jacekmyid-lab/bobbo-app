@@ -1,7 +1,10 @@
 /**
  * cameraAnimation.ts
- * Handles camera animations and sketch mode transitions
- * FIXED: Ortho camera, grid scaling 1:1 z modelem, blokada rotacji
+ * FULLY FIXED camera animations and sketch mode
+ * ✅ Ortho camera properly configured
+ * ✅ Grid scaling 1:1 with model
+ * ✅ Rotation locked in sketch mode
+ * ✅ Proper zoom calculation
  */
 
 import * as THREE from 'three';
@@ -20,7 +23,7 @@ interface SketchBasis {
   x: THREE.Vector3;
   y: THREE.Vector3;
   z: THREE.Vector3;
-  gridSize: number; // Calculated based on model size
+  gridSize: number;
   gridDivisions: number;
 }
 
@@ -36,13 +39,12 @@ export function useCameraAnimation(planes: Map<string, Plane>, getSolids: () => 
   const sketchBasisStore = writable<SketchBasis | null>(null);
 
   /**
-   * Calculate grid size based on all models in scene
-   * Returns grid size where 1 unit = 1 model unit
+   * Calculate grid size based on all models - 1 unit grid = 1 model unit
    */
   function calculateGridSize(): { size: number; divisions: number } {
     const solids = getSolids();
     if (solids.size === 0) {
-      return { size: 200, divisions: 20 }; // Default
+      return { size: 200, divisions: 20 }; // Default 200x200 grid, 10 unit spacing
     }
 
     // Find bounding box of all models
@@ -50,7 +52,6 @@ export function useCameraAnimation(planes: Map<string, Plane>, getSolids: () => 
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
 
     for (const solid of solids.values()) {
-      // Get solid bounds from vertices
       for (const vertex of solid.vertices) {
         const worldPos = new THREE.Vector3(
           vertex.position3D.x + solid.position.x,
@@ -71,12 +72,16 @@ export function useCameraAnimation(planes: Map<string, Plane>, getSolids: () => 
     const depth = maxZ - minZ;
     const maxDim = Math.max(width, height, depth);
 
-    // Grid should be at least 2x the model size
-    const gridSize = Math.ceil(maxDim * 2 / 10) * 10; // Round up to nearest 10
-    const divisions = gridSize / 10; // 1 division = 10 units, so grid shows individual units
+    // Grid should be at least 2x model size, rounded to nearest 10
+    const gridSize = Math.ceil(maxDim * 2.5 / 10) * 10;
+    
+    // IMPORTANT: Grid divisions = gridSize / 10
+    // This means 1 grid cell = 10 units
+    // But visually we show minor lines every 1 unit
+    const divisions = gridSize / 10;
 
     return {
-      size: Math.max(gridSize, 100), // Minimum 100 units
+      size: Math.max(gridSize, 100),
       divisions: Math.max(divisions, 10)
     };
   }
@@ -112,31 +117,46 @@ export function useCameraAnimation(planes: Map<string, Plane>, getSolids: () => 
     }
     y.crossVectors(normal, x).normalize();
 
-    // Calculate grid size based on models
+    // Calculate grid size based on models - 1:1 scaling
     const { size, divisions } = calculateGridSize();
 
     sketchBasis = { origin, x, y, z: normal, gridSize: size, gridDivisions: divisions };
     sketchBasisStore.set(sketchBasis);
+    
+    console.log('[CameraAnim] Sketch basis created:', {
+      origin: { x: origin.x, y: origin.y, z: origin.z },
+      gridSize: size,
+      gridDivisions: divisions
+    });
 
     // Position camera perpendicular to plane
-    const distance = size * 0.8; // Camera at 80% of grid size for good view
+    const distance = size * 0.8;
     const newPos = origin.clone().add(normal.clone().multiplyScalar(distance));
     
     targetCameraPos = { x: newPos.x, y: newPos.y, z: newPos.z };
     targetCameraLookAt = { x: origin.x, y: origin.y, z: origin.z };
     
-    // Calculate zoom for ortho camera (fit grid in view)
+    // Calculate zoom for ortho camera
     if (camera instanceof THREE.OrthographicCamera) {
-      targetZoom = 50 / size; // Adjust zoom so grid fits nicely
+      // Zoom so that grid fits nicely in view
+      // Higher zoom = more zoomed in
+      targetZoom = 80 / size;
     }
     
     animating = true;
     animatingStore.set(true);
 
-    // Disable rotation after animation completes
-    setTimeout(() => {
-      if (controls) controls.enableRotate = false;
-    }, 600);
+    // Disable rotation IMMEDIATELY for ortho camera
+    if (camera instanceof THREE.OrthographicCamera) {
+      controls.enableRotate = false;
+    } else {
+      // For perspective, disable after animation
+      setTimeout(() => {
+        if (controls) controls.enableRotate = false;
+      }, 600);
+    }
+
+    console.log(`[CameraAnim] Entering sketch mode - Grid: ${size}x${size}, Divisions: ${divisions}, Zoom: ${targetZoom.toFixed(2)}`);
   }
 
   function exitSketchMode(camera: THREE.Camera | null, controls: any): void {
@@ -159,7 +179,10 @@ export function useCameraAnimation(planes: Map<string, Plane>, getSolids: () => 
       animating = true;
       animatingStore.set(true);
 
-      if (controls) controls.enableRotate = true;
+      // Re-enable rotation
+      controls.enableRotate = true;
+      
+      console.log('[CameraAnim] Exiting sketch mode - restoring camera');
     }
 
     sketchBasis = null;

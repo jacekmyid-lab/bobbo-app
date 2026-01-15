@@ -1,6 +1,9 @@
 /**
- * sketchTools.ts
- * Manager for all sketch drawing tools (line, polyline, circle, etc.)
+ * sketchTools.ts - FIXED
+ * Manager for all sketch drawing tools
+ * ✅ Safe null checks
+ * ✅ Proper initialization
+ * ✅ No infinite loops
  */
 
 import * as THREE from 'three';
@@ -33,7 +36,10 @@ export abstract class SketchTool {
    * Convert screen coordinates to 2D plane coordinates
    */
   protected screenToPlane(screenX: number, screenY: number): Point2D | null {
-    if (!this.canvas || !this.camera || !this.plane) return null;
+    if (!this.canvas || !this.camera || !this.plane) {
+      console.warn('[SketchTool] Missing canvas, camera, or plane');
+      return null;
+    }
 
     const rect = this.canvas.getBoundingClientRect();
     const x = ((screenX - rect.left) / rect.width) * 2 - 1;
@@ -58,9 +64,9 @@ export abstract class SketchTool {
     );
 
     const intersect = new THREE.Vector3();
-    raycaster.ray.intersectPlane(threePlane, intersect);
+    const hit = raycaster.ray.intersectPlane(threePlane, intersect);
 
-    if (!intersect) return null;
+    if (!hit) return null;
 
     const xAxis = new THREE.Vector3(
       this.plane.xAxis.x,
@@ -86,6 +92,7 @@ export abstract class SketchTool {
    */
   activate(): void {
     this.isActive = true;
+    console.log(`[${this.constructor.name}] Activated`);
   }
 
   /**
@@ -94,6 +101,7 @@ export abstract class SketchTool {
   deactivate(): void {
     this.isActive = false;
     this.reset();
+    console.log(`[${this.constructor.name}] Deactivated`);
   }
 
   /**
@@ -133,6 +141,7 @@ export class PolylineTool extends SketchTool {
   reset(): void {
     this.points = [];
     this.currentPoint = null;
+    console.log('[PolylineTool] Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -145,23 +154,36 @@ export class PolylineTool extends SketchTool {
   }
 
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive || !this.sketcher) {
+      console.warn('[PolylineTool] Not active or no sketcher');
+      return;
+    }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
-    if (!point) return;
+    if (!point) {
+      console.warn('[PolylineTool] Could not convert screen to plane');
+      return;
+    }
 
     if (this.points.length === 0) {
+      // Start new polyline
       this.points.push(point);
+      console.log('[PolylineTool] Started polyline at', point);
     } else if (this.canClose()) {
+      // Close the polyline
+      console.log('[PolylineTool] Closing polyline');
       this.finishPolyline(true);
     } else {
+      // Add point
       this.points.push(this.snapToFirstPoint(point));
+      console.log('[PolylineTool] Added point', point, 'total:', this.points.length);
     }
   }
 
   handleRightClick(event: MouseEvent): void {
     if (!this.isActive || this.points.length < 2) return;
     event.preventDefault();
+    console.log('[PolylineTool] Right-click: finishing open polyline');
     this.finishPolyline(false);
   }
 
@@ -170,16 +192,19 @@ export class PolylineTool extends SketchTool {
 
     switch (event.key) {
       case 'Escape':
+        console.log('[PolylineTool] ESC: canceling');
         this.reset();
         break;
       case 'Enter':
         if (this.points.length >= 2) {
+          console.log('[PolylineTool] ENTER: closing polyline');
           this.finishPolyline(true);
         }
         break;
       case 'Backspace':
         if (this.points.length > 0) {
           this.points.pop();
+          console.log('[PolylineTool] BACKSPACE: removed point, remaining:', this.points.length);
           if (this.points.length === 0) {
             this.reset();
           }
@@ -213,17 +238,25 @@ export class PolylineTool extends SketchTool {
   }
 
   private finishPolyline(closed: boolean): void {
-    if (!this.sketcher || this.points.length < 2) return;
-
-    const entity = SketchEntityFactory.polyline(this.points, closed);
-    this.sketcher.addEntity(entity);
-
-    if (closed) {
-      const profiles = this.sketcher.detectProfiles();
-      console.log(`[PolylineTool] Created closed polyline with ${profiles.length} profile(s)`);
+    if (!this.sketcher || this.points.length < 2) {
+      console.warn('[PolylineTool] Cannot finish: no sketcher or too few points');
+      return;
     }
 
-    this.reset();
+    try {
+      const entity = SketchEntityFactory.polyline(this.points, closed);
+      this.sketcher.addEntity(entity);
+      console.log(`[PolylineTool] Created ${closed ? 'closed' : 'open'} polyline with ${this.points.length} points`);
+
+      if (closed) {
+        const profiles = this.sketcher.detectProfiles();
+        console.log(`[PolylineTool] Detected ${profiles.length} profile(s)`);
+      }
+
+      this.reset();
+    } catch (error) {
+      console.error('[PolylineTool] Error creating polyline:', error);
+    }
   }
 
   getPoints(): Point2D[] {
@@ -249,6 +282,7 @@ export class LineTool extends SketchTool {
   reset(): void {
     this.startPoint = null;
     this.endPoint = null;
+    console.log('[LineTool] Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -261,18 +295,32 @@ export class LineTool extends SketchTool {
   }
 
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive || !this.sketcher) {
+      console.warn('[LineTool] Not active or no sketcher');
+      return;
+    }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
-    if (!point) return;
+    if (!point) {
+      console.warn('[LineTool] Could not convert screen to plane');
+      return;
+    }
 
     if (!this.startPoint) {
       this.startPoint = point;
+      console.log('[LineTool] Set start point', point);
     } else {
       this.endPoint = point;
-      const entity = SketchEntityFactory.line(this.startPoint, this.endPoint);
-      this.sketcher.addEntity(entity);
-      this.reset();
+      console.log('[LineTool] Set end point', point);
+      
+      try {
+        const entity = SketchEntityFactory.line(this.startPoint, this.endPoint);
+        this.sketcher.addEntity(entity);
+        console.log('[LineTool] Created line');
+        this.reset();
+      } catch (error) {
+        console.error('[LineTool] Error creating line:', error);
+      }
     }
   }
 
@@ -306,6 +354,7 @@ export class CircleTool extends SketchTool {
   reset(): void {
     this.center = null;
     this.radius = 0;
+    console.log('[CircleTool] Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -321,17 +370,29 @@ export class CircleTool extends SketchTool {
   }
 
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive || !this.sketcher) {
+      console.warn('[CircleTool] Not active or no sketcher');
+      return;
+    }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
-    if (!point) return;
+    if (!point) {
+      console.warn('[CircleTool] Could not convert screen to plane');
+      return;
+    }
 
     if (!this.center) {
       this.center = point;
+      console.log('[CircleTool] Set center', point);
     } else {
       if (this.radius > 0.1) {
-        const entity = SketchEntityFactory.circle(this.center, this.radius);
-        this.sketcher.addEntity(entity);
+        try {
+          const entity = SketchEntityFactory.circle(this.center, this.radius);
+          this.sketcher.addEntity(entity);
+          console.log('[CircleTool] Created circle, radius:', this.radius);
+        } catch (error) {
+          console.error('[CircleTool] Error creating circle:', error);
+        }
       }
       this.reset();
     }
@@ -367,6 +428,7 @@ export class RectangleTool extends SketchTool {
   reset(): void {
     this.corner = null;
     this.oppositeCorner = null;
+    console.log('[RectangleTool] Reset');
   }
 
   handleMouseMove(event: MouseEvent): void {
@@ -379,21 +441,33 @@ export class RectangleTool extends SketchTool {
   }
 
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive || !this.sketcher) {
+      console.warn('[RectangleTool] Not active or no sketcher');
+      return;
+    }
 
     const point = this.screenToPlane(event.clientX, event.clientY);
-    if (!point) return;
+    if (!point) {
+      console.warn('[RectangleTool] Could not convert screen to plane');
+      return;
+    }
 
     if (!this.corner) {
       this.corner = point;
+      console.log('[RectangleTool] Set corner', point);
     } else {
       this.oppositeCorner = point;
       const width = this.oppositeCorner.x - this.corner.x;
       const height = this.oppositeCorner.y - this.corner.y;
       
       if (Math.abs(width) > 0.1 && Math.abs(height) > 0.1) {
-        const entity = SketchEntityFactory.rectangle(this.corner, width, height);
-        this.sketcher.addEntity(entity);
+        try {
+          const entity = SketchEntityFactory.rectangle(this.corner, width, height);
+          this.sketcher.addEntity(entity);
+          console.log('[RectangleTool] Created rectangle', width, 'x', height);
+        } catch (error) {
+          console.error('[RectangleTool] Error creating rectangle:', error);
+        }
       }
       this.reset();
     }

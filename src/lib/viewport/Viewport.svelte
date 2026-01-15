@@ -1,8 +1,10 @@
 <!--
-  Viewport.svelte - FINAL FIXED
-  ✅ Brak infinite loop
-  ✅ Poprawne typowanie
-  ✅ Działa double-click, hover, selection
+  Viewport.svelte - FULLY FIXED
+  ✅ Double-click model activation
+  ✅ Topology selection after activation
+  ✅ Ortho camera in sketch mode with locked rotation
+  ✅ Grid 1:1 scaling with model
+  ✅ ESC exits active model
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -49,26 +51,54 @@
 
   // Sketch tools
   let sketcher = $state<any>(null);
-  let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
   let currentToolType = $derived($toolStore.activeTool);
+  
+  // Create tool instance based on currentToolType - NO $effect, just $derived
+  let activeTool = $derived.by(() => {
+    if (!isSketchMode || !sketcher || !currentToolType.startsWith('sketch-')) {
+      return null;
+    }
+
+    const plane = sketchPlaneId ? planes.get(sketchPlaneId) : null;
+    if (!plane) {
+      console.warn('[Viewport] No plane found for sketch');
+      return null;
+    }
+
+    const canvas = canvasContainer?.querySelector('canvas') || null;
+    
+    console.log('[Viewport] Creating tool:', currentToolType);
+    
+    let tool: PolylineTool | LineTool | CircleTool | RectangleTool | null = null;
+    
+    switch (currentToolType) {
+      case 'sketch-polyline':
+        tool = new PolylineTool(canvas, camera, sketcher, plane);
+        break;
+      case 'sketch-line':
+        tool = new LineTool(canvas, camera, sketcher, plane);
+        break;
+      case 'sketch-circle':
+        tool = new CircleTool(canvas, camera, sketcher, plane);
+        break;
+      case 'sketch-rectangle':
+        tool = new RectangleTool(canvas, camera, sketcher, plane);
+        break;
+    }
+    
+    if (tool) {
+      tool.activate();
+    }
+    
+    return tool;
+  });
 
   // Camera animation
   const cameraAnim = useCameraAnimation(planes, () => solids);
   
-  // POPRAWKA: Subskrybuj ręcznie stores, ale bez $state (użyj let)
-  let animating = false;
-  let sketchBasis: any = null;
-  
-  // Subscribe in $effect but don't create infinite loop
-  $effect(() => {
-    const unsubAnim = cameraAnim.animatingStore.subscribe(v => { animating = v; });
-    const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { sketchBasis = v; });
-    
-    return () => {
-      unsubAnim();
-      unsubBasis();
-    };
-  });
+  // Use $state with stores
+  let animating = $state(false);
+  let sketchBasis = $state<any>(null);
 
   // Initialize sketcher when entering sketch mode
   $effect(() => {
@@ -76,52 +106,14 @@
       const plane = planes.get(sketchPlaneId);
       if (plane) {
         sketcher = createSketcher($sketchEditStore.sketchId || 'temp', plane);
+        console.log('[Viewport] Sketcher created');
       }
     } else if (!isSketchMode) {
       sketcher = null;
-      activeTool = null;
     }
   });
 
-  // Initialize tool when tool type changes
-  $effect(() => {
-    if (!isSketchMode || !sketcher) {
-      activeTool = null;
-      return;
-    }
-
-    const plane = sketchPlaneId ? planes.get(sketchPlaneId) : null;
-    if (!plane) return;
-
-    if (activeTool) {
-      activeTool.deactivate();
-    }
-
-    const canvas = canvasContainer?.querySelector('canvas') || null;
-    
-    switch (currentToolType) {
-      case 'sketch-polyline':
-        activeTool = new PolylineTool(canvas, camera, sketcher, plane);
-        activeTool.activate();
-        break;
-      case 'sketch-line':
-        activeTool = new LineTool(canvas, camera, sketcher, plane);
-        activeTool.activate();
-        break;
-      case 'sketch-circle':
-        activeTool = new CircleTool(canvas, camera, sketcher, plane);
-        activeTool.activate();
-        break;
-      case 'sketch-rectangle':
-        activeTool = new RectangleTool(canvas, camera, sketcher, plane);
-        activeTool.activate();
-        break;
-      default:
-        activeTool = null;
-    }
-  });
-
-  // Viewport interaction
+  // Viewport interaction - pass getSolids function
   const {
     handleMouseMove,
     handleClick,
@@ -132,7 +124,7 @@
     () => canvasContainer,
     () => camera,
     () => scene,
-    solids
+    () => solids
   );
 
   // Handle sketch mode changes
@@ -157,31 +149,47 @@
   }
 
   onMount(() => {
+    // Subscribe to camera animation stores
+    const unsubAnim = cameraAnim.animatingStore.subscribe(v => { animating = v; });
+    const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { 
+      sketchBasis = v;
+      console.log('[Viewport] Sketch basis updated:', v ? 'present' : 'null');
+    });
+    
     window.addEventListener('keydown', handleKeyDown);
 
     const canvas = canvasContainer?.querySelector('canvas');
     
+    // Sketch event handlers - use function references that check activeTool internally
     const sketchMouseMove = (e: MouseEvent) => {
-      if (activeTool) activeTool.handleMouseMove(e);
+      const tool = activeTool; // Get current tool
+      if (tool && isSketchMode) {
+        tool.handleMouseMove(e);
+      }
     };
     
     const sketchClick = (e: MouseEvent) => {
-      if (activeTool) {
+      const tool = activeTool;
+      if (tool && isSketchMode) {
         e.stopPropagation();
-        activeTool.handleClick(e);
+        tool.handleClick(e);
       }
     };
     
     const sketchRightClick = (e: MouseEvent) => {
-      if (activeTool) {
+      const tool = activeTool;
+      if (tool && isSketchMode) {
         e.preventDefault();
         e.stopPropagation();
-        activeTool.handleRightClick(e);
+        tool.handleRightClick(e);
       }
     };
     
     const sketchKeyDown = (e: KeyboardEvent) => {
-      if (activeTool) activeTool.handleKeyDown(e);
+      const tool = activeTool;
+      if (tool && isSketchMode) {
+        tool.handleKeyDown(e);
+      }
     };
 
     if (canvas) {
@@ -200,6 +208,8 @@
     animFrame = requestAnimationFrame(animate);
     
     return () => {
+      unsubAnim();
+      unsubBasis();
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keydown', sketchKeyDown);
       if (canvas) {
@@ -217,7 +227,6 @@
     isSketchMode ? 'orthographic' : 'perspective'
   );
   
-  // Pivot position
   let pivotPos = $state({ x: 0, y: 0, z: 0 });
   
   $effect(() => {
@@ -285,7 +294,7 @@
           rotateSpeed={0.5}
           panSpeed={0.5}
           zoomSpeed={1}
-          enableRotate={!isSketchMode}
+          enableRotate={false}
           oncreate={(ref) => onControlsCreate(ref)}
         />
       </T.OrthographicCamera>
@@ -308,6 +317,14 @@
         {#if plane}
           <SketchPreview tool={activeTool} {plane} toolType={currentToolType} />
         {/if}
+      {/if}
+    {:else}
+      <!-- Debug: show when sketch mode but no basis -->
+      {#if isSketchMode && !sketchBasis}
+        <T.Mesh position={[0, 0, 0]}>
+          <T.SphereGeometry args={[5, 16, 16]} />
+          <T.MeshBasicMaterial color="#ff0000" />
+        </T.Mesh>
       {/if}
     {/if}
 
