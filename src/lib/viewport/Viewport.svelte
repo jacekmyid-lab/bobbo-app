@@ -3,7 +3,6 @@
   import { Canvas, T } from '@threlte/core';
   import { OrbitControls } from '@threlte/extras';
   import * as THREE from 'three';
-  
   import { 
     viewportStore,
     sketchEditStore,
@@ -12,62 +11,77 @@
     pivotUpdateStore,
     documentStore,
     toolStore,
-    selectionModeStore
+    selectionModeStore,
+    selectionStore // Dodano brakujący import
   } from '$lib/stores/cadStore';
-  
   import SceneContent from './SceneContent.svelte';
   import ViewportOverlay from './ViewportOverlay.svelte';
   import SketchGrid from './SketchGrid.svelte';
   import SketchPreview from './SketchPreview.svelte';
+  import SketchRenderer from './SketchRenderer.svelte'; // Komponent do renderowania gotowych linii
   import SketchToolInstructions from './SketchToolInstructions.svelte';
   import { useViewportInteraction } from './viewportInteraction';
   import { useCameraAnimation } from './cameraAnimation';
   import { PolylineTool, LineTool, CircleTool, RectangleTool } from './sketchTools';
   import { createSketcher } from '$lib/sketcher/Sketcher';
+  import type { SketchEntity } from '$lib/core/types';
 
-  // Reactive store values
+  // --- ZMIENNE STANU (Reactive Stores) ---
   let viewportConfig = $derived($viewportStore);
   let isSketchMode = $derived($sketchEditStore.isEditing);
   let sketchPlaneId = $derived($sketchEditStore.planeId);
-  let solids = $derived($solidStore);
+  
+  // Naprawione zmienne (brakowało ich wcześniej)
   let activeModelId = $derived($activeModelStore);
+  let solids = $derived($solidStore);
+  let activeSolid = $derived(activeModelId ? solids.get(activeModelId) : null);
+
   let pivotUpdate = $derived($pivotUpdateStore);
   let planes = $derived($documentStore.planes);
   let selectionMode = $derived($selectionModeStore);
 
-  // Scene references
+  // --- REFERENCJE SCENY ---
   let canvasContainer: HTMLDivElement;
   let scene: THREE.Scene | null = null;
   let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
   let controls: any = null;
 
-  // Sketch tools
+  // --- NARZĘDZIA SZKICOWNIKA ---
   let sketcher = $state<any>(null);
   let currentToolType = $state<string>('');
   let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
-
-  // Camera animation
-  const cameraAnim = useCameraAnimation(planes, () => solids);
   
+  // NOWE: Stan dla renderowania szkicu
+  let sketchEntities = $state<SketchEntity[]>([]);
+  let uiUpdateTrigger = $state(0); // Wymusza odświeżanie podglądu przy ruchu myszy
+
+  // --- ANIMACJA KAMERY ---
+  const cameraAnim = useCameraAnimation(planes, () => solids);
   let animating = $state(false);
   let sketchBasis = $state<any>(null);
 
-  // Initialize sketcher when entering sketch mode
+  // --- EFEKTY (LOGIKA) ---
+
+  // Inicjalizacja szkicownika przy wejściu w tryb Sketch
   $effect(() => {
     if (isSketchMode && sketchPlaneId && !sketcher) {
       const plane = planes.get(sketchPlaneId);
       if (plane) {
         sketcher = createSketcher($sketchEditStore.sketchId || 'temp', plane);
+        // Załaduj istniejące encje jeśli są
+        sketchEntities = sketcher.getEntities(); 
         console.log('[Viewport] ✅ Sketcher created for plane:', plane.name);
       }
     } else if (!isSketchMode) {
+      // Sprzątanie po wyjściu
       sketcher = null;
       activeTool = null;
       currentToolType = '';
+      sketchEntities = [];
     }
   });
 
-  // Create tool when toolType changes
+  // Obsługa zmiany narzędzia (Active Tool)
   $effect(() => {
     const newToolType = $toolStore.activeTool;
     
@@ -81,42 +95,27 @@
       return;
     }
 
-    if (newToolType === currentToolType) {
-      return;
-    }
+    if (newToolType === currentToolType) return;
 
     if (activeTool) {
-      console.log('[Viewport] 🔄 Deactivating old tool:', currentToolType);
       activeTool.deactivate();
       activeTool = null;
     }
 
     if (newToolType.startsWith('sketch-')) {
       const plane = planes.get(sketchPlaneId);
-      if (!plane) {
-        console.warn('[Viewport] No plane found for sketch');
-        return;
-      }
+      if (!plane) return;
 
       const canvas = canvasContainer?.querySelector('canvas') || null;
-      
       console.log('[Viewport] 🔧 Creating tool:', newToolType);
       
       let tool: PolylineTool | LineTool | CircleTool | RectangleTool | null = null;
       
       switch (newToolType) {
-        case 'sketch-polyline':
-          tool = new PolylineTool(canvas, camera, sketcher, plane);
-          break;
-        case 'sketch-line':
-          tool = new LineTool(canvas, camera, sketcher, plane);
-          break;
-        case 'sketch-circle':
-          tool = new CircleTool(canvas, camera, sketcher, plane);
-          break;
-        case 'sketch-rectangle':
-          tool = new RectangleTool(canvas, camera, sketcher, plane);
-          break;
+        case 'sketch-polyline': tool = new PolylineTool(canvas, camera, sketcher, plane); break;
+        case 'sketch-line': tool = new LineTool(canvas, camera, sketcher, plane); break;
+        case 'sketch-circle': tool = new CircleTool(canvas, camera, sketcher, plane); break;
+        case 'sketch-rectangle': tool = new RectangleTool(canvas, camera, sketcher, plane); break;
       }
       
       if (tool) {
@@ -130,7 +129,7 @@
     }
   });
 
-  // Viewport interaction
+  // Interakcja z viewportem (Standardowa)
   const {
     handleMouseMove,
     handleClick,
@@ -144,92 +143,78 @@
     () => solids
   );
 
-  // Handle sketch mode camera changes
+  // Animacja kamery przy wejściu/wyjściu ze szkicownika
   $effect(() => {
     if (isSketchMode && sketchPlaneId && camera && controls) {
-      console.log('[Viewport] 📷 Entering sketch mode - animating camera...');
       cameraAnim.enterSketchMode(sketchPlaneId, camera, controls);
     } else if (!isSketchMode && cameraAnim.savedCameraState && camera && controls) {
-      console.log('[Viewport] 📷 Exiting sketch mode - restoring camera...');
       cameraAnim.exitSketchMode(camera, controls);
     }
   });
 
+  // Callbacks Threlte
   function onCameraCreate(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     camera = cam;
-    if (cam.parent) {
-      scene = cam.parent as THREE.Scene;
-      console.log('[Viewport] Scene initialized');
-    }
+    if (cam.parent) scene = cam.parent as THREE.Scene;
   }
 
   function onControlsCreate(ctrl: any) {
     controls = ctrl;
   }
 
-  // ✅ POPRAWIONE: Unified event handler dla sketch i normalnego trybu
+  // --- OBSŁUGA ZDARZEŃ (Unified Handlers) ---
+
   function handleCanvasClick(e: MouseEvent) {
     if (isSketchMode && activeTool) {
-      // W trybie sketch - przekaż do narzędzia
-      console.log('[Viewport] 🖱️ Sketch click, tool:', currentToolType);
       activeTool.handleClick(e);
+      // Aktualizacja UI po kliknięciu (np. dodanie punktu)
+      uiUpdateTrigger++;
+      if (sketcher) sketchEntities = [...sketcher.getEntities()];
     } else {
-      // W normalnym trybie - przekaż do viewport interaction
       handleClick(e);
     }
   }
 
   function handleCanvasContextMenu(e: MouseEvent) {
     if (isSketchMode && activeTool) {
-      // W trybie sketch - przekaż do narzędzia
-      console.log('[Viewport] 🖱️ Sketch right-click');
       e.preventDefault();
       e.stopPropagation();
       activeTool.handleRightClick(e);
+      uiUpdateTrigger++;
+      if (sketcher) sketchEntities = [...sketcher.getEntities()];
     } else {
-      // W normalnym trybie
       handleContextMenu(e);
     }
   }
 
   function handleCanvasMouseMove(e: MouseEvent) {
     if (isSketchMode && activeTool) {
-      // W trybie sketch - przekaż do narzędzia
       activeTool.handleMouseMove(e);
+      uiUpdateTrigger++; // Wymusza odświeżenie podglądu (SketchPreview)
     } else {
-      // W normalnym trybie
       handleMouseMove(e);
     }
   }
 
   function handleCanvasDoubleClick(e: MouseEvent) {
-    if (!isSketchMode) {
-      handleDoubleClick(e);
-    }
+    if (!isSketchMode) handleDoubleClick(e);
   }
 
   function handleGlobalKeyDown(e: KeyboardEvent) {
     if (isSketchMode && activeTool) {
-      // W trybie sketch - przekaż do narzędzia
       activeTool.handleKeyDown(e);
+      uiUpdateTrigger++;
+      if (sketcher) sketchEntities = [...sketcher.getEntities()];
     }
-    // Zawsze też przekaż do viewport (dla ESC itp.)
     handleKeyDown(e);
   }
 
+  // --- CYKL ŻYCIA ---
   onMount(() => {
-    console.log('[Viewport] Component mounted');
-    
-    // Subscribe to camera animation stores
     const unsubAnim = cameraAnim.animatingStore.subscribe(v => { animating = v; });
-    const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { 
-      sketchBasis = v;
-    });
-    
-    // Global keyboard handler
+    const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { sketchBasis = v; });
     window.addEventListener('keydown', handleGlobalKeyDown);
 
-    // Animation loop
     let animFrame: number;
     const animate = () => {
       cameraAnim.updateAnimation(camera, controls);
@@ -245,14 +230,11 @@
     };
   });
 
-  let activeSolid = $derived(activeModelId ? solids.get(activeModelId) : null);
+  // --- CALCULATED VALUES FOR RENDER ---
   let showWorldGrid = $derived(viewportConfig.showGrid && !isSketchMode);
-  let cameraType: 'perspective' | 'orthographic' = $derived(
-    isSketchMode ? 'orthographic' : 'perspective'
-  );
+  let cameraType: 'perspective' | 'orthographic' = $derived(isSketchMode ? 'orthographic' : 'perspective');
   
   let pivotPos = $state({ x: 0, y: 0, z: 0 });
-  
   $effect(() => {
     const _ = pivotUpdate;
     if (activeSolid) {
@@ -287,7 +269,7 @@
         fov={45}
         near={0.1}
         far={10000}
-        oncreate={(ref) => onCameraCreate(ref)}
+        oncreate={onCameraCreate}
       >
         <OrbitControls 
           enableDamping
@@ -296,7 +278,7 @@
           panSpeed={0.5}
           zoomSpeed={1}
           enableRotate={!isSketchMode}
-          oncreate={(ref) => onControlsCreate(ref)}
+          oncreate={onControlsCreate}
         />
       </T.PerspectiveCamera>
     {:else}
@@ -310,7 +292,7 @@
         bottom={-100}
         near={0.1}
         far={10000}
-        oncreate={(ref) => onCameraCreate(ref)}
+        oncreate={onCameraCreate}
       >
         <OrbitControls 
           enableDamping
@@ -319,7 +301,7 @@
           panSpeed={0.5}
           zoomSpeed={1}
           enableRotate={false}
-          oncreate={(ref) => onControlsCreate(ref)}
+          oncreate={onControlsCreate}
         />
       </T.OrthographicCamera>
     {/if}
@@ -336,14 +318,23 @@
     {#if isSketchMode && sketchBasis}
       <SketchGrid basis={sketchBasis} />
       
-      {#if activeTool && sketchPlaneId}
+      {#if sketchPlaneId}
         {@const plane = planes.get(sketchPlaneId)}
+        
         {#if plane}
-          <SketchPreview tool={activeTool} {plane} toolType={currentToolType} />
+          <SketchRenderer 
+            {plane} 
+            entities={sketchEntities} 
+          />
+
+          {#key uiUpdateTrigger}
+            {#if activeTool}
+              <SketchPreview tool={activeTool} {plane} toolType={currentToolType} />
+            {/if}
+          {/key}
         {/if}
       {/if}
     {/if}
-
     {#if viewportConfig.showAxes && !isSketchMode}
       <T.AxesHelper args={[50]} />
     {/if}
@@ -378,7 +369,9 @@
   />
   
   {#if isSketchMode && activeTool}
-    <SketchToolInstructions toolType={currentToolType} tool={activeTool} />
+    {#key uiUpdateTrigger}
+      <SketchToolInstructions toolType={currentToolType} tool={activeTool} />
+    {/key}
   {/if}
 </div>
 
