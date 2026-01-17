@@ -105,6 +105,27 @@
   }
 
   /**
+   * Create arrow head geometry (cone pointing in direction)
+   */
+  function createArrowHead(start: THREE.Vector3, end: THREE.Vector3): { geometry: THREE.ConeGeometry, position: THREE.Vector3, rotation: THREE.Euler } {
+    const direction = new THREE.Vector3().subVectors(end, start).normalize();
+    const length = 2.5; // Długość grotu
+    const radius = 1.0; // Szerokość grotu
+    
+    const geometry = new THREE.ConeGeometry(radius, length, 8);
+    
+    // Pozycja grotu na końcu strzałki
+    const position = end.clone();
+    
+    // Oblicz rotację aby grot był skierowany w stronę end
+    const up = new THREE.Vector3(0, 1, 0);
+    const quaternion = new THREE.Quaternion().setFromUnitVectors(up, direction);
+    const rotation = new THREE.Euler().setFromQuaternion(quaternion);
+    
+    return { geometry, position, rotation };
+  }
+
+  /**
    * Generate line preview segment
    */
   function getLineSegment(lineTool: LineTool): {start: THREE.Vector3, end: THREE.Vector3} | null {
@@ -228,10 +249,7 @@
           ? getRectangleSegments(tool as RectangleTool) 
           : [];
       case 'sketch-offset':
-        if (tool instanceof Object && 'getPreviewArrow' in tool) {
-          const seg = getOffsetArrowSegment(tool as OffsetTool);
-          return seg ? [seg] : [];
-        }
+        // Dla offset nie pokazujemy standardowych segmentów, tylko strzałkę
         return [];
       default:
         return [];
@@ -241,6 +259,24 @@
   let pointMarkers = $derived(getPointMarkers());
   let isOffsetTool = $derived(toolType === 'sketch-offset');
   let previewColor = $derived(isOffsetTool ? '#f59e0b' : '#06b6d4');
+  
+  // Offset arrow data
+  let offsetArrowData = $derived.by(() => {
+    if (!isOffsetTool || !tool) return null;
+    if (!('getPreviewArrow' in tool)) return null;
+    
+    const arrow = (tool as OffsetTool).getPreviewArrow();
+    if (!arrow) return null;
+    
+    const start = planeToWorld(arrow.start.x, arrow.start.y);
+    const end = planeToWorld(arrow.end.x, arrow.end.y);
+    
+    return {
+      segment: { start, end },
+      arrowHead: createArrowHead(start, end),
+      side: arrow.side
+    };
+  });
   
   // Get snap info for visual feedback
   let snapInfo = $derived.by(() => {
@@ -286,14 +322,30 @@
   {/if}
 {/if}
 
-<!-- Offset arrow end marker -->
-{#if isOffsetTool && previewSegments.length > 0}
-  {@const lastSegment = previewSegments[previewSegments.length - 1]}
-  {@const endPos = lastSegment.end}
-  <T.Mesh position={[endPos.x, endPos.y, endPos.z]}>
-    <T.SphereGeometry args={[0.8, 16, 16]} />
+<!-- Offset tool: Arrow with head -->
+{#if offsetArrowData}
+  <!-- Arrow shaft (line) -->
+  {@const lineData = createThickLine(offsetArrowData.segment.start, offsetArrowData.segment.end, PREVIEW_LINE_THICKNESS)}
+  <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry}>
     <T.MeshBasicMaterial color="#f59e0b" />
   </T.Mesh>
+  
+  <!-- Arrow head (cone) -->
+  <T.Mesh 
+    position={offsetArrowData.arrowHead.position.toArray()}
+    rotation={[offsetArrowData.arrowHead.rotation.x, offsetArrowData.arrowHead.rotation.y, offsetArrowData.arrowHead.rotation.z]}
+  >
+    <T.ConeGeometry args={[1.0, 2.5, 8]} />
+    <T.MeshBasicMaterial color="#f59e0b" />
+  </T.Mesh>
+  
+  <!-- Base point indicator -->
+  <T.Mesh position={offsetArrowData.segment.start.toArray()}>
+    <T.SphereGeometry args={[0.6, 16, 16]} />
+    <T.MeshBasicMaterial color="#ffffff" />
+  </T.Mesh>
+  
+  <!-- Side indicator text would go here if needed -->
 {/if}
 
 <!-- Snap indicator - bright cyan/magenta square -->

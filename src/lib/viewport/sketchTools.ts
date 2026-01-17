@@ -645,14 +645,22 @@ export class OffsetTool extends SketchTool {
   private selectedId: string | null = null;
   private sourceChain: Point2D[] = []; 
   private isClosed: boolean = false;
+  private currentMousePos: Point2D | null = null; // Pozycja kursora dla podglądu
 
   reset(): void {
     this.selectedId = null;
     this.sourceChain = [];
     this.isClosed = false;
+    this.currentMousePos = null;
   }
 
-  handleMouseMove(event: MouseEvent): void {}
+  handleMouseMove(event: MouseEvent): void {
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (p) {
+      this.currentMousePos = p;
+    }
+  }
+
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   handleRightClick(event: MouseEvent): void { this.reset(); }
 
@@ -730,8 +738,73 @@ export class OffsetTool extends SketchTool {
     this.reset();
   }
 
-  getPreviewArrow() {
-    // For preview in SketchPreview component
-    return null;
+  getPreviewArrow(): { start: Point2D, end: Point2D, side: 'left' | 'right' } | null {
+    if (!this.selectedId || this.sourceChain.length < 2 || !this.currentMousePos) {
+      return null;
+    }
+
+    // Znajdź najbliższy segment do kursora
+    let closestSegmentIdx = 0;
+    let minDist = Infinity;
+
+    for (let i = 0; i < this.sourceChain.length - 1; i++) {
+      const p1 = this.sourceChain[i];
+      const p2 = this.sourceChain[i + 1];
+      const proj = projectPointOnLine(this.currentMousePos, p1, p2);
+      
+      if (proj.dist < minDist) {
+        minDist = proj.dist;
+        closestSegmentIdx = i;
+      }
+    }
+
+    // Weź środkowy segment (dla lepszego podglądu)
+    const segIdx = Math.min(closestSegmentIdx, this.sourceChain.length - 2);
+    const p1 = this.sourceChain[segIdx];
+    const p2 = this.sourceChain[segIdx + 1];
+
+    // Oblicz środek segmentu
+    const mid = {
+      x: (p1.x + p2.x) / 2,
+      y: (p1.y + p2.y) / 2
+    };
+
+    // Oblicz wektor normalny do segmentu
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    
+    if (len < 0.001) return null;
+
+    // Normalny wektor (obrócony o 90°)
+    const nx = -dy / len;
+    const ny = dx / len;
+
+    // Sprawdź, po której stronie jest kursor
+    const toMouse = {
+      x: this.currentMousePos.x - mid.x,
+      y: this.currentMousePos.y - mid.y
+    };
+
+    // Iloczyn skalarny określa stronę
+    const dot = toMouse.x * nx + toMouse.y * ny;
+    const side: 'left' | 'right' = dot > 0 ? 'right' : 'left';
+
+    // Długość strzałki (stała wizualna)
+    const arrowLength = 15;
+
+    // Kierunek strzałki zależy od strony
+    const direction = dot > 0 ? 1 : -1;
+
+    const end = {
+      x: mid.x + nx * arrowLength * direction,
+      y: mid.y + ny * arrowLength * direction
+    };
+
+    return {
+      start: mid,
+      end: end,
+      side: side
+    };
   }
 }
