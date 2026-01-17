@@ -660,66 +660,81 @@ export class Sketcher {
   /**
    * TRIM: Utnij linię w miejscu kliknięcia do najbliższych przecięć z innymi obiektami.
    */
+  /**
+   * TRIM: Ulepszona wersja z tolerancją na błędy numeryczne.
+   */
   trimEntity(targetId: string, clickPoint: Point2D): void {
     const target = this.entities.get(targetId);
-    // Obecnie obsługujemy przycinanie tylko linii
     if (!target || target.type !== 'line') return;
 
     const intersections: number[] = [];
-    
-    // 1. Znajdź przecięcia z wszystkimi innymi liniami
+    const EPS = SketchMath.EPSILON; // 1e-5
+
+    // 1. Znajdź punkty cięcia (t) na wybranej linii
     for (const other of this.entities.values()) {
       if (other.id === targetId) continue;
+      
+      // Obsługa linii
       if (other.type === 'line') {
         const result = SketchMath.intersectLineLine(target.start, target.end, other.start, other.end);
-        // Interesują nas przecięcia wewnątrz "innej" linii (u w zakresie 0-1)
-        if (result && result.u >= 0 && result.u <= 1) {
-          intersections.push(result.t);
+        // Akceptujemy przecięcia wewnątrz innej linii (z małym marginesem)
+        if (result && result.u >= -EPS && result.u <= 1 + EPS) {
+          // Clamp t do zakresu 0-1, żeby zniwelować błędy numeryczne
+          const t = Math.max(0, Math.min(1, result.t));
+          intersections.push(t);
         }
       }
-      // Tu w przyszłości można dodać obsługę okręgów/łuków
+      // (Tu można dodać intersect z kołem/prostokątem w przyszłości)
     }
 
-    // Dodaj końce odcinka (t=0 i t=1)
+    // Dodaj końce odcinka
     intersections.push(0, 1);
-    // Posortuj i usuń duplikaty
-    const sortedT = Array.from(new Set(intersections)).sort((a, b) => a - b);
 
-    // 2. Znajdź gdzie kliknął użytkownik (parametr t na linii)
+    // Posortuj i usuń duplikaty (bardzo bliskie punkty traktuj jako jeden)
+    const uniqueT = intersections
+      .sort((a, b) => a - b)
+      .filter((t, index, array) => {
+        if (index === 0) return true;
+        return t - array[index - 1] > EPS; // Filtruj jeśli różnica < EPSILON
+      });
+
+    // 2. Znajdź gdzie kliknął użytkownik
     const proj = SketchMath.projectPointOnLine(clickPoint, target.start, target.end);
     const clickT = Math.max(0, Math.min(1, proj.t));
 
-    // 3. Znajdź segment, w który kliknięto i usuń go
-    for (let i = 0; i < sortedT.length - 1; i++) {
-      if (clickT >= sortedT[i] && clickT <= sortedT[i+1]) {
+    // 3. Znajdź segment do usunięcia
+    for (let i = 0; i < uniqueT.length - 1; i++) {
+      const tStart = uniqueT[i];
+      const tEnd = uniqueT[i+1];
+
+      // Jeśli kliknięcie jest wewnątrz tego segmentu...
+      if (clickT >= tStart - EPS && clickT <= tEnd + EPS) {
+        
         // Usuń starą linię
         this.removeEntity(targetId);
-        
-        const tStart = sortedT[i];
-        const tEnd = sortedT[i+1];
 
-        // Odtwórz segment przed wycięciem (jeśli nie jest zerowej długości)
-        if (tStart > 0.001) {
+        // Odtwórz segment "przed" wycięciem (jeśli ma długość)
+        if (tStart > EPS) {
           const pEnd = {
             x: target.start.x + tStart * (target.end.x - target.start.x),
             y: target.start.y + tStart * (target.end.y - target.start.y)
           };
           this.addEntity(SketchEntityFactory.line(target.start, pEnd));
         }
-        // Odtwórz segment za wycięciem
-        if (tEnd < 0.999) {
+
+        // Odtwórz segment "za" wycięciem (jeśli ma długość)
+        if (tEnd < 1 - EPS) {
           const pStart = {
             x: target.start.x + tEnd * (target.end.x - target.start.x),
             y: target.start.y + tEnd * (target.end.y - target.start.y)
           };
           this.addEntity(SketchEntityFactory.line(pStart, target.end));
         }
-        return; // Zakończ po znalezieniu segmentu
+        
+        return; // Zrobione
       }
     }
   }
-
-
 /**
    * EXTEND: Wydłuż linię do najbliższej prostej w kierunku końca bliższego kliknięciu.
    */

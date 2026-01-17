@@ -6,11 +6,11 @@
   import { T } from '@threlte/core';
   import * as THREE from 'three';
   import type { Plane } from '$lib/core/types';
-  import type { PolylineTool, LineTool, CircleTool, RectangleTool } from './sketchTools';
+  import type { PolylineTool, LineTool, CircleTool, RectangleTool, OffsetTool } from './sketchTools';
 
   // Props using $props()
   let { tool, plane, toolType } = $props<{
-    tool: PolylineTool | LineTool | CircleTool | RectangleTool | null;
+    tool: PolylineTool | LineTool | CircleTool | RectangleTool | OffsetTool | null;
     plane: Plane;
     toolType: string;
   }>();
@@ -62,6 +62,20 @@
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     return geometry;
+  }
+
+  // Nowa funkcja do geometrii strzałki offsetu
+  function getOffsetArrowGeometry(offsetTool: OffsetTool): THREE.BufferGeometry | null {
+    // TypeScript check: upewnij się, że metoda istnieje (bo dodaliśmy ją przed chwilą)
+    if (!('getPreviewArrow' in offsetTool)) return null;
+    
+    const arrow = offsetTool.getPreviewArrow();
+    if (!arrow) return null;
+
+    const start = planeToWorld(arrow.start.x, arrow.start.y);
+    const end = planeToWorld(arrow.end.x, arrow.end.y);
+
+    return new THREE.BufferGeometry().setFromPoints([start, end]);
   }
 
   /**
@@ -169,7 +183,7 @@
     return points;
   }
 
-  // Computed geometry
+ // Computed geometry
   let previewGeometry = $derived.by(() => {
     if (!tool) return null;
     
@@ -189,6 +203,11 @@
       case 'sketch-rectangle':
         return tool instanceof Object && 'getCorner' in tool 
           ? getRectangleGeometry(tool as RectangleTool) 
+          : null;
+      case 'sketch-offset':
+        // Tutaj poprawka - rzutowanie na OffsetTool i wywołanie nowej funkcji
+        return tool instanceof Object && 'getPreviewArrow' in tool 
+          ? getOffsetArrowGeometry(tool as OffsetTool)
           : null;
       default:
         return null;
@@ -226,6 +245,27 @@
     <T.Mesh position={[firstPoint.x, firstPoint.y, firstPoint.z]}>
       <T.SphereGeometry args={[1.5, 16, 16]} />
       <T.MeshBasicMaterial color="#22c55e" transparent opacity={0.8} />
+    </T.Mesh>
+  {/if}
+{/if}
+<!-- OffsetTool -->
+{#if previewGeometry && toolType !== 'sketch-offset'}
+  <T.Line geometry={previewGeometry}>
+    <T.LineBasicMaterial color="#06b6d4" linewidth={2} />
+  </T.Line>
+{/if}
+
+{#if toolType === 'sketch-offset' && previewGeometry}
+  <T.Line geometry={previewGeometry}>
+    <T.LineBasicMaterial color="#f59e0b" linewidth={2} />
+  </T.Line>
+  
+  {@const arrow = (tool as OffsetTool).getPreviewArrow()}
+  {#if arrow}
+    {@const endPos = planeToWorld(arrow.end.x, arrow.end.y)}
+    <T.Mesh position={[endPos.x, endPos.y, endPos.z]}>
+       <T.SphereGeometry args={[0.5, 16, 16]} />
+       <T.MeshBasicMaterial color="#f59e0b" />
     </T.Mesh>
   {/if}
 {/if}

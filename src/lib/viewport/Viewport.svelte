@@ -49,8 +49,10 @@
   // --- NARZĘDZIA SZKICOWNIKA ---
   let sketcher = $state<any>(null);
   let currentToolType = $state<string>('');
-  let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | null>(null);
-  
+ let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | TrimTool | ExtendTool | OffsetTool | null>(null);
+  // ... inne zmienne derived ...
+let activeToolName = $derived($toolStore.activeTool);
+let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset'].includes(activeToolName));
   // NOWE: Stan dla renderowania szkicu
   let sketchEntities = $state<SketchEntity[]>([]);
   let uiUpdateTrigger = $state(0); // Wymusza odświeżanie podglądu przy ruchu myszy
@@ -254,7 +256,8 @@
   class="cad-viewport"
   class:sketch-mode={isSketchMode}
   class:has-active={activeModelId !== null}
-  bind:this={canvasContainer}
+  class:cursor-picker={isPrecisionTool} 
+  bind:this={canvasContainer} 
   onmousemove={handleCanvasMouseMove}
   onclick={handleCanvasClick}
   ondblclick={handleCanvasDoubleClick}
@@ -400,4 +403,10 @@
   .cad-viewport.has-active {
     border: 1px solid #3b82f6;
   }
+
+  /* Kursor typu "Picker" - kwadrat 16x16 z pustym środkiem */
+.cursor-picker :global(canvas) {
+  cursor: url('data:image/svg+xml;utf8,<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="8" width="8" height="8" stroke="white" stroke-width="2" fill="none" style="filter: drop-shadow(1px 1px 1px black);"/></svg>') 12 12, crosshair !important;
+}
+
 </style>
