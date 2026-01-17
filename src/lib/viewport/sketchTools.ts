@@ -182,6 +182,21 @@ export class PolylineTool extends SketchTool {
   
   getPoints() { return this.points; }
   getCurrentPoint() { return this.currentPoint; }
+// Dodaj tę metodę do klasy PolylineTool
+canClose(): boolean {
+  // Musimy mieć przynajmniej 3 punkty, aby zamknąć wielokąt
+  if (this.points.length < 3) return false;
+  
+  // Musimy mieć aktualną pozycję kursora
+  if (!this.currentPoint) return false;
+  
+  const startPoint = this.points[0];
+  
+  // Sprawdzamy dystans między kursorem a punktem startowym
+  // SNAP_DISTANCE jest zdefiniowane na górze Twojego pliku (wartość 5.0)
+  return vecDist(this.currentPoint, startPoint) < SNAP_DISTANCE;
+}
+
 }
 
 export class LineTool extends SketchTool {

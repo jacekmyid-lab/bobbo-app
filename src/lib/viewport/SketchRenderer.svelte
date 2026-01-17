@@ -40,11 +40,12 @@
   {@const isSelected = selectedEntityIds.includes(entity.id)}
   {@const isHovered = hoveredEntityId === entity.id}
   
-  {@const color = isSelected ? COLORS.selected : (isHovered ? COLORS.hovered : (entity.construction ? COLORS.construction : COLORS.normal))}
+  {@const color = isSelected ? 
+    COLORS.selected : (isHovered ? COLORS.hovered : (entity.construction ? COLORS.construction : COLORS.normal))}
   
-  {@const lineWidth = isSelected || isHovered ? 4 : 2} 
+  {@const lineWidth = isSelected || isHovered ? 4 : 3} 
   
-  {@const pointSize = isSelected || isHovered ? 8 : 6}
+  {@const pointSize = isSelected || isHovered ? 10 : 8}
 
   {#if entity.type === 'line'}
     {@const start = to3D(entity.start)}
@@ -59,6 +60,24 @@
         <T.BufferAttribute
           attach="attributes-position"
           args={[new Float32Array([...start.toArray(), ...end.toArray()]), 3]}
+        />
+      </T.BufferGeometry>
+      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
+    </T.Points>
+
+  {:else if entity.type === 'polyline'}
+    {@const polyPoints = entity.points.map(p => to3D(p))}
+    {@const displayPoints = entity.closed ? [...polyPoints, polyPoints[0]] : polyPoints}
+    
+    <T.Line geometry={createLineGeometry(displayPoints)}>
+      <T.LineBasicMaterial {color} linewidth={lineWidth} />
+    </T.Line>
+    
+    <T.Points>
+      <T.BufferGeometry>
+        <T.BufferAttribute
+          attach="attributes-position"
+          args={[new Float32Array(polyPoints.flatMap(p => p.toArray())), 3]}
         />
       </T.BufferGeometry>
       <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
@@ -79,45 +98,10 @@
       <T.BufferGeometry>
         <T.BufferAttribute
           attach="attributes-position"
-          args={[new Float32Array(points.slice(0, 4).flatMap(p => p.toArray())), 3]}
+          args={[new Float32Array([corner, p2, p3, p4].flatMap(p => p.toArray())), 3]}
         />
       </T.BufferGeometry>
       <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
-    </T.Points>
-    
-  {:else if entity.type === 'polyline'}
-    {@const points = entity.points.map(p => to3D(p))}
-    
-    {#if entity.closed}
-      {@const closedPoints = [...points, points[0]]}
-      <T.Line geometry={createLineGeometry(closedPoints)}>
-        <T.LineBasicMaterial {color} linewidth={lineWidth} />
-      </T.Line>
-    {:else}
-      <T.Line geometry={createLineGeometry(points)}>
-        <T.LineBasicMaterial {color} linewidth={lineWidth} />
-      </T.Line>
-    {/if}
-
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array(points.flatMap(p => p.toArray())), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
-    </T.Points>
-    
-  {:else if entity.type === 'point'}
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array(to3D(entity.location).toArray()), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial {color} size={pointSize + 2} sizeAttenuation={false} />
     </T.Points>
 
   {:else if entity.type === 'circle'}
@@ -141,7 +125,18 @@
           args={[new Float32Array(to3D(entity.center).toArray()), 3]}
         />
       </T.BufferGeometry>
-      <T.PointsMaterial color={COLORS.point} size={pointSize - 2} sizeAttenuation={false} />
+      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
+    </T.Points>
+
+  {:else if entity.type === 'point'}
+    <T.Points>
+      <T.BufferGeometry>
+        <T.BufferAttribute
+          attach="attributes-position"
+          args={[new Float32Array(to3D(entity.location).toArray()), 3]}
+        />
+      </T.BufferGeometry>
+      <T.PointsMaterial {color} size={pointSize + 2} sizeAttenuation={false} />
     </T.Points>
   {/if}
 {/each}
