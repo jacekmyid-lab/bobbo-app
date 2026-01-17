@@ -11,11 +11,11 @@
 
   // Colors
   const COLORS = {
-    normal: '#06b6d4',       // Cyan
+    normal: '#ffff00',       // ŻÓŁTY
     selected: '#f59e0b',     // Amber
     hovered: '#22c55e',      // Green
     construction: '#6366f1', // Indigo
-    point: '#ffffff'
+    point: '#ff0000'         // CZERWONY
   };
 
   // Convert 2D point to 3D using plane coordinates
@@ -25,14 +25,27 @@
     const yAxis = new THREE.Vector3(plane.yAxis.x, plane.yAxis.y, plane.yAxis.z);
     
     return origin
-      .add(xAxis.multiplyScalar(p.x))
-      .add(yAxis.multiplyScalar(p.y));
+      .clone()
+      .add(xAxis.clone().multiplyScalar(p.x))
+      .add(yAxis.clone().multiplyScalar(p.y));
   }
 
-  // Helper to create line geometry from points
-  function createLineGeometry(points: THREE.Vector3[]) {
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    return geometry;
+  // Helper to create thick line using mesh (cylinder)
+  function createThickLine(start: THREE.Vector3, end: THREE.Vector3, color: string, thickness: number) {
+    const direction = new THREE.Vector3().subVectors(end, start);
+    const length = direction.length();
+    const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    
+    const geometry = new THREE.CylinderGeometry(thickness, thickness, length, 8);
+    const material = new THREE.MeshBasicMaterial({ color });
+    
+    // Rotate to align with direction
+    const orientation = new THREE.Matrix4();
+    orientation.lookAt(start, end, new THREE.Object3D().up);
+    orientation.multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+    geometry.applyMatrix4(orientation);
+    
+    return { geometry, material, position: midpoint };
   }
 </script>
 
@@ -43,45 +56,46 @@
   {@const color = isSelected ? 
     COLORS.selected : (isHovered ? COLORS.hovered : (entity.construction ? COLORS.construction : COLORS.normal))}
   
-  {@const lineWidth = isSelected || isHovered ? 4 : 3} 
-  
-  {@const pointSize = isSelected || isHovered ? 10 : 8}
+  {@const lineThickness = isSelected || isHovered ? 0.4 : 0.3}
+  {@const pointSize = isSelected || isHovered ? 1.0 : 0.8}
 
   {#if entity.type === 'line'}
     {@const start = to3D(entity.start)}
     {@const end = to3D(entity.end)}
+    {@const lineData = createThickLine(start, end, color, lineThickness)}
     
-    <T.Line geometry={createLineGeometry([start, end])}>
-      <T.LineBasicMaterial {color} linewidth={lineWidth} />
-    </T.Line>
+    <!-- Thick line as mesh -->
+    <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry} material={lineData.material} />
     
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array([...start.toArray(), ...end.toArray()]), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
-    </T.Points>
+    <!-- Endpoint markers -->
+    <T.Mesh position={start.toArray()}>
+      <T.SphereGeometry args={[pointSize, 16, 16]} />
+      <T.MeshBasicMaterial color={COLORS.point} />
+    </T.Mesh>
+    
+    <T.Mesh position={end.toArray()}>
+      <T.SphereGeometry args={[pointSize, 16, 16]} />
+      <T.MeshBasicMaterial color={COLORS.point} />
+    </T.Mesh>
 
   {:else if entity.type === 'polyline'}
     {@const polyPoints = entity.points.map(p => to3D(p))}
     {@const displayPoints = entity.closed ? [...polyPoints, polyPoints[0]] : polyPoints}
     
-    <T.Line geometry={createLineGeometry(displayPoints)}>
-      <T.LineBasicMaterial {color} linewidth={lineWidth} />
-    </T.Line>
+    <!-- Draw segments -->
+    {#each displayPoints.slice(0, -1) as point, i}
+      {@const nextPoint = displayPoints[i + 1]}
+      {@const lineData = createThickLine(point, nextPoint, color, lineThickness)}
+      <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry} material={lineData.material} />
+    {/each}
     
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array(polyPoints.flatMap(p => p.toArray())), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
-    </T.Points>
+    <!-- Endpoint markers -->
+    {#each polyPoints as point}
+      <T.Mesh position={point.toArray()}>
+        <T.SphereGeometry args={[pointSize, 16, 16]} />
+        <T.MeshBasicMaterial color={COLORS.point} />
+      </T.Mesh>
+    {/each}
 
   {:else if entity.type === 'rectangle'}
     {@const corner = to3D(entity.corner)}
@@ -90,19 +104,20 @@
     {@const p4 = to3D({ x: entity.corner.x, y: entity.corner.y + entity.height })}
     {@const points = [corner, p2, p3, p4, corner]}
     
-    <T.Line geometry={createLineGeometry(points)}>
-      <T.LineBasicMaterial {color} linewidth={lineWidth} />
-    </T.Line>
+    <!-- Draw segments -->
+    {#each points.slice(0, -1) as point, i}
+      {@const nextPoint = points[i + 1]}
+      {@const lineData = createThickLine(point, nextPoint, color, lineThickness)}
+      <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry} material={lineData.material} />
+    {/each}
     
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array([corner, p2, p3, p4].flatMap(p => p.toArray())), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
-    </T.Points>
+    <!-- Corner markers -->
+    {#each [corner, p2, p3, p4] as point}
+      <T.Mesh position={point.toArray()}>
+        <T.SphereGeometry args={[pointSize, 16, 16]} />
+        <T.MeshBasicMaterial color={COLORS.point} />
+      </T.Mesh>
+    {/each}
 
   {:else if entity.type === 'circle'}
     {@const segments = 64}
@@ -114,29 +129,23 @@
       {@const __ = points.push(to3D({ x, y }))}
     {/each}
     
-    <T.Line geometry={createLineGeometry(points)}>
-      <T.LineBasicMaterial {color} linewidth={lineWidth} />
-    </T.Line>
+    <!-- Draw segments -->
+    {#each points.slice(0, -1) as point, i}
+      {@const nextPoint = points[i + 1]}
+      {@const lineData = createThickLine(point, nextPoint, color, lineThickness)}
+      <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry} material={lineData.material} />
+    {/each}
     
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array(to3D(entity.center).toArray()), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial color={COLORS.point} size={pointSize} sizeAttenuation={false} />
-    </T.Points>
+    <!-- Center marker -->
+    <T.Mesh position={to3D(entity.center).toArray()}>
+      <T.SphereGeometry args={[pointSize, 16, 16]} />
+      <T.MeshBasicMaterial color={COLORS.point} />
+    </T.Mesh>
 
   {:else if entity.type === 'point'}
-    <T.Points>
-      <T.BufferGeometry>
-        <T.BufferAttribute
-          attach="attributes-position"
-          args={[new Float32Array(to3D(entity.location).toArray()), 3]}
-        />
-      </T.BufferGeometry>
-      <T.PointsMaterial {color} size={pointSize + 2} sizeAttenuation={false} />
-    </T.Points>
+    <T.Mesh position={to3D(entity.location).toArray()}>
+      <T.SphereGeometry args={[pointSize + 0.1, 16, 16]} />
+      <T.MeshBasicMaterial {color} />
+    </T.Mesh>
   {/if}
 {/each}

@@ -1,6 +1,6 @@
 <!--
   SketchPreview.svelte
-  Shows preview of sketch entities being drawn
+  Shows preview of sketch entities being drawn with thick lines
 -->
 <script lang="ts">
   import { T } from '@threlte/core';
@@ -14,6 +14,10 @@
     plane: Plane;
     toolType: string;
   }>();
+
+  // Thickness for preview lines
+  const PREVIEW_LINE_THICKNESS = 0.25;
+  const PREVIEW_POINT_SIZE = 0.7;
 
   /**
    * Convert 2D plane point to 3D world point
@@ -29,125 +33,142 @@
   }
 
   /**
-   * Generate polyline preview geometry
+   * Helper to create thick line using mesh (cylinder)
    */
-  function getPolylineGeometry(polylineTool: PolylineTool): THREE.BufferGeometry | null {
+  function createThickLine(start: THREE.Vector3, end: THREE.Vector3, thickness: number) {
+    const direction = new THREE.Vector3().subVectors(end, start);
+    const length = direction.length();
+    const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
+    
+    const geometry = new THREE.CylinderGeometry(thickness, thickness, length, 8);
+    
+    // Rotate to align with direction
+    const orientation = new THREE.Matrix4();
+    orientation.lookAt(start, end, new THREE.Object3D().up);
+    orientation.multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+    geometry.applyMatrix4(orientation);
+    
+    return { geometry, position: midpoint };
+  }
+
+  /**
+   * Generate polyline preview segments
+   */
+  function getPolylineSegments(polylineTool: PolylineTool): Array<{start: THREE.Vector3, end: THREE.Vector3}> {
     const points = polylineTool.getPoints();
     const current = polylineTool.getCurrentPoint();
     
-    if (points.length === 0) return null;
+    if (points.length === 0) return [];
 
-    const positions: number[] = [];
+    const segments: Array<{start: THREE.Vector3, end: THREE.Vector3}> = [];
     
-    // Add all existing points
-    for (const p of points) {
-      const world = planeToWorld(p.x, p.y);
-      positions.push(world.x, world.y, world.z);
+    // Add all existing segments
+    for (let i = 0; i < points.length - 1; i++) {
+      segments.push({
+        start: planeToWorld(points[i].x, points[i].y),
+        end: planeToWorld(points[i + 1].x, points[i + 1].y)
+      });
     }
     
-    // Add current point if exists
-    if (current) {
-      const world = planeToWorld(current.x, current.y);
-      positions.push(world.x, world.y, world.z);
+    // Add current segment if exists
+    if (current && points.length > 0) {
+      segments.push({
+        start: planeToWorld(points[points.length - 1].x, points[points.length - 1].y),
+        end: planeToWorld(current.x, current.y)
+      });
       
       // If can close, add line back to start
-      if (polylineTool.canClose() && points.length > 0) {
-        const first = planeToWorld(points[0].x, points[0].y);
-        positions.push(first.x, first.y, first.z);
+      if (polylineTool.canClose()) {
+        segments.push({
+          start: planeToWorld(current.x, current.y),
+          end: planeToWorld(points[0].x, points[0].y)
+        });
       }
     }
     
-    if (positions.length < 6) return null; // Need at least 2 points
-    
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    return geometry;
+    return segments;
   }
 
-  // Nowa funkcja do geometrii strzałki offsetu
-  function getOffsetArrowGeometry(offsetTool: OffsetTool): THREE.BufferGeometry | null {
-    // TypeScript check: upewnij się, że metoda istnieje (bo dodaliśmy ją przed chwilą)
+  /**
+   * Generate offset arrow segment
+   */
+  function getOffsetArrowSegment(offsetTool: OffsetTool): {start: THREE.Vector3, end: THREE.Vector3} | null {
     if (!('getPreviewArrow' in offsetTool)) return null;
     
     const arrow = offsetTool.getPreviewArrow();
     if (!arrow) return null;
 
-    const start = planeToWorld(arrow.start.x, arrow.start.y);
-    const end = planeToWorld(arrow.end.x, arrow.end.y);
-
-    return new THREE.BufferGeometry().setFromPoints([start, end]);
+    return {
+      start: planeToWorld(arrow.start.x, arrow.start.y),
+      end: planeToWorld(arrow.end.x, arrow.end.y)
+    };
   }
 
   /**
-   * Generate line preview geometry
+   * Generate line preview segment
    */
-  function getLineGeometry(lineTool: LineTool): THREE.BufferGeometry | null {
+  function getLineSegment(lineTool: LineTool): {start: THREE.Vector3, end: THREE.Vector3} | null {
     const start = lineTool.getStartPoint();
     const end = lineTool.getEndPoint();
     
     if (!start || !end) return null;
     
-    const worldStart = planeToWorld(start.x, start.y);
-    const worldEnd = planeToWorld(end.x, end.y);
-    
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute([
-      worldStart.x, worldStart.y, worldStart.z,
-      worldEnd.x, worldEnd.y, worldEnd.z
-    ], 3));
-    
-    return geometry;
+    return {
+      start: planeToWorld(start.x, start.y),
+      end: planeToWorld(end.x, end.y)
+    };
   }
 
   /**
-   * Generate circle preview geometry
+   * Generate circle preview segments
    */
-  function getCircleGeometry(circleTool: CircleTool): THREE.BufferGeometry | null {
+  function getCircleSegments(circleTool: CircleTool): Array<{start: THREE.Vector3, end: THREE.Vector3}> {
     const center = circleTool.getCenter();
     const radius = circleTool.getRadius();
     
-    if (!center || radius < 0.1) return null;
+    if (!center || radius < 0.1) return [];
     
-    const segments = 64;
-    const positions: number[] = [];
+    const segments: Array<{start: THREE.Vector3, end: THREE.Vector3}> = [];
+    const numSegments = 64;
     
-    for (let i = 0; i <= segments; i++) {
-      const angle = (i / segments) * Math.PI * 2;
-      const x = center.x + radius * Math.cos(angle);
-      const y = center.y + radius * Math.sin(angle);
-      const world = planeToWorld(x, y);
-      positions.push(world.x, world.y, world.z);
+    for (let i = 0; i < numSegments; i++) {
+      const angle1 = (i / numSegments) * Math.PI * 2;
+      const angle2 = ((i + 1) / numSegments) * Math.PI * 2;
+      
+      const x1 = center.x + radius * Math.cos(angle1);
+      const y1 = center.y + radius * Math.sin(angle1);
+      const x2 = center.x + radius * Math.cos(angle2);
+      const y2 = center.y + radius * Math.sin(angle2);
+      
+      segments.push({
+        start: planeToWorld(x1, y1),
+        end: planeToWorld(x2, y2)
+      });
     }
     
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    return geometry;
+    return segments;
   }
 
   /**
-   * Generate rectangle preview geometry
+   * Generate rectangle preview segments
    */
-  function getRectangleGeometry(rectTool: RectangleTool): THREE.BufferGeometry | null {
+  function getRectangleSegments(rectTool: RectangleTool): Array<{start: THREE.Vector3, end: THREE.Vector3}> {
     const corner = rectTool.getCorner();
     const opposite = rectTool.getOppositeCorner();
     
-    if (!corner || !opposite) return null;
+    if (!corner || !opposite) return [];
     
     const p1 = planeToWorld(corner.x, corner.y);
     const p2 = planeToWorld(opposite.x, corner.y);
     const p3 = planeToWorld(opposite.x, opposite.y);
     const p4 = planeToWorld(corner.x, opposite.y);
     
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute([
-      p1.x, p1.y, p1.z,
-      p2.x, p2.y, p2.z,
-      p3.x, p3.y, p3.z,
-      p4.x, p4.y, p4.z,
-      p1.x, p1.y, p1.z  // Close the loop
-    ], 3));
-    
-    return geometry;
+    return [
+      { start: p1, end: p2 },
+      { start: p2, end: p3 },
+      { start: p3, end: p4 },
+      { start: p4, end: p1 }
+    ];
   }
 
   /**
@@ -183,59 +204,60 @@
     return points;
   }
 
- // Computed geometry
-  let previewGeometry = $derived.by(() => {
-    if (!tool) return null;
+  // Computed segments
+  let previewSegments = $derived.by(() => {
+    if (!tool) return [];
     
     switch (toolType) {
       case 'sketch-polyline':
         return tool instanceof Object && 'getPoints' in tool 
-          ? getPolylineGeometry(tool as PolylineTool) 
-          : null;
+          ? getPolylineSegments(tool as PolylineTool) 
+          : [];
       case 'sketch-line':
-        return tool instanceof Object && 'getStartPoint' in tool 
-          ? getLineGeometry(tool as LineTool) 
-          : null;
+        if (tool instanceof Object && 'getStartPoint' in tool) {
+          const seg = getLineSegment(tool as LineTool);
+          return seg ? [seg] : [];
+        }
+        return [];
       case 'sketch-circle':
         return tool instanceof Object && 'getCenter' in tool 
-          ? getCircleGeometry(tool as CircleTool) 
-          : null;
+          ? getCircleSegments(tool as CircleTool) 
+          : [];
       case 'sketch-rectangle':
         return tool instanceof Object && 'getCorner' in tool 
-          ? getRectangleGeometry(tool as RectangleTool) 
-          : null;
+          ? getRectangleSegments(tool as RectangleTool) 
+          : [];
       case 'sketch-offset':
-        // Tutaj poprawka - rzutowanie na OffsetTool i wywołanie nowej funkcji
-        return tool instanceof Object && 'getPreviewArrow' in tool 
-          ? getOffsetArrowGeometry(tool as OffsetTool)
-          : null;
+        if (tool instanceof Object && 'getPreviewArrow' in tool) {
+          const seg = getOffsetArrowSegment(tool as OffsetTool);
+          return seg ? [seg] : [];
+        }
+        return [];
       default:
-        return null;
+        return [];
     }
   });
 
   let pointMarkers = $derived(getPointMarkers());
+  let isOffsetTool = $derived(toolType === 'sketch-offset');
+  let previewColor = $derived(isOffsetTool ? '#f59e0b' : '#06b6d4');
 </script>
 
-<!-- Preview line -->
-{#if previewGeometry}
-  <T.Line geometry={previewGeometry}>
-    <T.LineBasicMaterial color="#06b6d4" linewidth={2} />
-  </T.Line>
-{/if}
+<!-- Preview thick lines -->
+{#each previewSegments as segment}
+  {@const lineData = createThickLine(segment.start, segment.end, PREVIEW_LINE_THICKNESS)}
+  <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry}>
+    <T.MeshBasicMaterial color={previewColor} />
+  </T.Mesh>
+{/each}
 
 <!-- Point markers -->
-{#if pointMarkers.length > 0}
-  <T.Points>
-    <T.BufferGeometry>
-      <T.BufferAttribute
-        attach="attributes-position"
-        args={[new Float32Array(pointMarkers.flatMap(p => [p.x, p.y, p.z])), 3]}
-      />
-    </T.BufferGeometry>
-    <T.PointsMaterial color="#ffffff" size={8} sizeAttenuation={false} />
-  </T.Points>
-{/if}
+{#each pointMarkers as point}
+  <T.Mesh position={[point.x, point.y, point.z]}>
+    <T.SphereGeometry args={[PREVIEW_POINT_SIZE, 16, 16]} />
+    <T.MeshBasicMaterial color="#ffffff" />
+  </T.Mesh>
+{/each}
 
 <!-- Close indicator for polyline -->
 {#if toolType === 'sketch-polyline' && tool instanceof Object && 'canClose' in tool && (tool as PolylineTool).canClose()}
@@ -243,29 +265,18 @@
   {#if points.length > 0}
     {@const firstPoint = planeToWorld(points[0].x, points[0].y)}
     <T.Mesh position={[firstPoint.x, firstPoint.y, firstPoint.z]}>
-      <T.SphereGeometry args={[1.5, 16, 16]} />
+      <T.SphereGeometry args={[1.2, 16, 16]} />
       <T.MeshBasicMaterial color="#22c55e" transparent opacity={0.8} />
     </T.Mesh>
   {/if}
 {/if}
-<!-- OffsetTool -->
-{#if previewGeometry && toolType !== 'sketch-offset'}
-  <T.Line geometry={previewGeometry}>
-    <T.LineBasicMaterial color="#06b6d4" linewidth={2} />
-  </T.Line>
-{/if}
 
-{#if toolType === 'sketch-offset' && previewGeometry}
-  <T.Line geometry={previewGeometry}>
-    <T.LineBasicMaterial color="#f59e0b" linewidth={2} />
-  </T.Line>
-  
-  {@const arrow = (tool as OffsetTool).getPreviewArrow()}
-  {#if arrow}
-    {@const endPos = planeToWorld(arrow.end.x, arrow.end.y)}
-    <T.Mesh position={[endPos.x, endPos.y, endPos.z]}>
-       <T.SphereGeometry args={[0.5, 16, 16]} />
-       <T.MeshBasicMaterial color="#f59e0b" />
-    </T.Mesh>
-  {/if}
+<!-- Offset arrow end marker -->
+{#if isOffsetTool && previewSegments.length > 0}
+  {@const lastSegment = previewSegments[previewSegments.length - 1]}
+  {@const endPos = lastSegment.end}
+  <T.Mesh position={[endPos.x, endPos.y, endPos.z]}>
+    <T.SphereGeometry args={[0.8, 16, 16]} />
+    <T.MeshBasicMaterial color="#f59e0b" />
+  </T.Mesh>
 {/if}
