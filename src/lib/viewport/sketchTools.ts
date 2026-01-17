@@ -1,8 +1,9 @@
 /**
- * sketchTools.ts - REFACTORED
+ * sketchTools.ts - WITH SNAP TO POINTS
+ * - Point snapping (łapanie do punktów)
+ * - Closed area detection (wykrywanie zamkniętych obszarów)
  * - Polyline closing fixed
- * - Offset direction fixed (2-step process)
- * - Hit tolerance increased (easier selection)
+ * - Offset direction fixed
  */
 
 import * as THREE from 'three';
@@ -18,9 +19,18 @@ import {
   getLineIntersection
 } from '../geometry/SketchMath';
 
-// ZWIĘKSZONA TOLERANCJA KLIKNIĘCIA (ułatwia trafianie w linie)
-const HIT_TOLERANCE = 1.5; // Było 0.5, teraz łatwiej trafić
-const SNAP_DISTANCE = 5.0; // Dystans przyciągania do punktów
+// Tolerances
+const HIT_TOLERANCE = 1.5;
+const SNAP_DISTANCE = 5.0; // Dystans łapania do punktów
+
+/**
+ * Snap point data
+ */
+interface SnapPoint {
+  point: Point2D;
+  type: 'endpoint' | 'midpoint' | 'center' | 'intersection';
+  entityId: string;
+}
 
 /**
  * ============================================================================
@@ -61,12 +71,109 @@ function getSegmentsFromEntity(entity: any): { p1: Point2D, p2: Point2D }[] {
   return segments;
 }
 
+/**
+ * ============================================================================
+ * SNAP POINT FINDER
+ * ============================================================================
+ */
+class SnapPointFinder {
+  private entities: SketchEntity[];
+  
+  constructor(entities: SketchEntity[]) {
+    this.entities = entities;
+  }
+
+  /**
+   * Find all snap points from entities
+   */
+  getAllSnapPoints(): SnapPoint[] {
+    const snapPoints: SnapPoint[] = [];
+
+    for (const entity of this.entities) {
+      // Endpoints
+      if (entity.type === 'line') {
+        snapPoints.push({ point: entity.start, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: entity.end, type: 'endpoint', entityId: entity.id });
+        
+        // Midpoint
+        const mid = { 
+          x: (entity.start.x + entity.end.x) / 2, 
+          y: (entity.start.y + entity.end.y) / 2 
+        };
+        snapPoints.push({ point: mid, type: 'midpoint', entityId: entity.id });
+      } 
+      else if (entity.type === 'polyline') {
+        entity.points.forEach(p => {
+          snapPoints.push({ point: p, type: 'endpoint', entityId: entity.id });
+        });
+        
+        // Midpoints of segments
+        for (let i = 0; i < entity.points.length - 1; i++) {
+          const mid = {
+            x: (entity.points[i].x + entity.points[i+1].x) / 2,
+            y: (entity.points[i].y + entity.points[i+1].y) / 2
+          };
+          snapPoints.push({ point: mid, type: 'midpoint', entityId: entity.id });
+        }
+      }
+      else if (entity.type === 'rectangle') {
+        const { x, y } = entity.corner;
+        const w = entity.width;
+        const h = entity.height;
+        
+        snapPoints.push({ point: { x, y }, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: { x: x + w, y }, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: { x: x + w, y: y + h }, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: { x, y: y + h }, type: 'endpoint', entityId: entity.id });
+        
+        // Center
+        const center = { x: x + w/2, y: y + h/2 };
+        snapPoints.push({ point: center, type: 'center', entityId: entity.id });
+      }
+      else if (entity.type === 'circle') {
+        snapPoints.push({ point: entity.center, type: 'center', entityId: entity.id });
+        
+        // Cardinal points
+        snapPoints.push({ point: { x: entity.center.x + entity.radius, y: entity.center.y }, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: { x: entity.center.x - entity.radius, y: entity.center.y }, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: { x: entity.center.x, y: entity.center.y + entity.radius }, type: 'endpoint', entityId: entity.id });
+        snapPoints.push({ point: { x: entity.center.x, y: entity.center.y - entity.radius }, type: 'endpoint', entityId: entity.id });
+      }
+      else if (entity.type === 'point') {
+        snapPoints.push({ point: entity.position, type: 'endpoint', entityId: entity.id });
+      }
+    }
+
+    return snapPoints;
+  }
+
+  /**
+   * Find nearest snap point to given point
+   */
+  findNearestSnap(point: Point2D, maxDistance: number = SNAP_DISTANCE): SnapPoint | null {
+    const snapPoints = this.getAllSnapPoints();
+    let nearest: SnapPoint | null = null;
+    let minDist = maxDistance;
+
+    for (const snap of snapPoints) {
+      const dist = vecDist(point, snap.point);
+      if (dist < minDist) {
+        minDist = dist;
+        nearest = snap;
+      }
+    }
+
+    return nearest;
+  }
+}
+
 export abstract class SketchTool {
   protected canvas: HTMLCanvasElement | null = null;
   protected camera: THREE.Camera | null = null;
   protected sketcher: Sketcher | null = null;
   protected plane: Plane | null = null;
   protected isActive: boolean = false;
+  protected snapFinder: SnapPointFinder | null = null;
 
   constructor(
     canvas: HTMLCanvasElement | null,
@@ -110,6 +217,23 @@ export abstract class SketchTool {
     };
   }
 
+  /**
+   * Apply snapping to a point
+   */
+  protected applySnapping(point: Point2D): Point2D {
+    if (!this.sketcher) return point;
+    
+    if (!this.snapFinder) {
+      this.snapFinder = new SnapPointFinder(this.sketcher.getEntities());
+    } else {
+      // Update snap finder with current entities
+      this.snapFinder = new SnapPointFinder(this.sketcher.getEntities());
+    }
+    
+    const snap = this.snapFinder.findNearestSnap(point);
+    return snap ? snap.point : point;
+  }
+
   activate(): void { this.isActive = true; }
   deactivate(): void { this.isActive = false; this.reset(); }
   abstract reset(): void;
@@ -119,7 +243,7 @@ export abstract class SketchTool {
   abstract handleKeyDown(event: KeyboardEvent): void;
 }
 
-// --- POPRAWIONA POLILINIA ---
+// --- POLYLINE TOOL WITH SNAPPING ---
 
 export class PolylineTool extends SketchTool {
   private points: Point2D[] = [];
@@ -131,11 +255,13 @@ export class PolylineTool extends SketchTool {
     if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if(p) {
-        // Logika przyciągania do startu
-        if (this.points.length > 2 && vecDist(p, this.points[0]) < SNAP_DISTANCE) {
-            this.currentPoint = { ...this.points[0] }; // Snap to start
+        const snapped = this.applySnapping(p);
+        
+        // Snap to start for closing
+        if (this.points.length > 2 && vecDist(snapped, this.points[0]) < SNAP_DISTANCE) {
+            this.currentPoint = { ...this.points[0] };
         } else {
-            this.currentPoint = p;
+            this.currentPoint = snapped;
         }
     }
   }
@@ -145,29 +271,31 @@ export class PolylineTool extends SketchTool {
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
 
+    const snapped = this.applySnapping(p);
+
     if (this.points.length === 0) {
-        this.points.push(p);
+        this.points.push(snapped);
     } 
     else {
-        // Sprawdź czy zamykamy (kliknięcie w pobliżu startu)
-        const distToStart = vecDist(p, this.points[0]);
+        // Check if closing (click near start)
+        const distToStart = vecDist(snapped, this.points[0]);
         if (this.points.length >= 3 && distToStart < SNAP_DISTANCE) {
-            this.finishPolyline(true); // ZAMKNIJ
+            this.finishPolyline(true); // CLOSE
             return;
         }
         
-        this.points.push(p);
+        this.points.push(snapped);
     }
   }
 
   handleRightClick(event: MouseEvent): void {
-    if (this.isActive && this.points.length >= 2) this.finishPolyline(false); // Zakończ otwartą
+    if (this.isActive && this.points.length >= 2) this.finishPolyline(false);
   }
 
   handleKeyDown(event: KeyboardEvent): void {
     if (event.key === 'Escape') this.reset();
-    if (event.key === 'Enter' && this.points.length >= 2) this.finishPolyline(false); // Enter kończy (otwarta)
-    if ((event.key === 'c' || event.key === 'C') && this.points.length >= 3) this.finishPolyline(true); // 'C' zamyka
+    if (event.key === 'Enter' && this.points.length >= 2) this.finishPolyline(false);
+    if ((event.key === 'c' || event.key === 'C') && this.points.length >= 3) this.finishPolyline(true);
     if (event.key === 'Backspace' && this.points.length > 0) this.points.pop();
   }
 
@@ -175,48 +303,49 @@ export class PolylineTool extends SketchTool {
     if (!this.sketcher) return;
     try {
       this.sketcher.addEntity(SketchEntityFactory.polyline(this.points, closed));
-      // Jeśli zamknięta, system powinien wykryć profil automatycznie
       this.reset();
     } catch (e) { console.error(e); }
   }
   
   getPoints() { return this.points; }
   getCurrentPoint() { return this.currentPoint; }
-// Dodaj tę metodę do klasy PolylineTool
-canClose(): boolean {
-  // Musimy mieć przynajmniej 3 punkty, aby zamknąć wielokąt
-  if (this.points.length < 3) return false;
   
-  // Musimy mieć aktualną pozycję kursora
-  if (!this.currentPoint) return false;
-  
-  const startPoint = this.points[0];
-  
-  // Sprawdzamy dystans między kursorem a punktem startowym
-  // SNAP_DISTANCE jest zdefiniowane na górze Twojego pliku (wartość 5.0)
-  return vecDist(this.currentPoint, startPoint) < SNAP_DISTANCE;
-}
-
+  canClose(): boolean {
+    if (this.points.length < 3) return false;
+    if (!this.currentPoint) return false;
+    return vecDist(this.currentPoint, this.points[0]) < SNAP_DISTANCE;
+  }
 }
 
 export class LineTool extends SketchTool {
   private startPoint: Point2D | null = null;
   private endPoint: Point2D | null = null;
+  
   reset(): void { this.startPoint = null; this.endPoint = null; }
+  
   handleMouseMove(event: MouseEvent): void {
-    if (this.isActive && this.startPoint) this.endPoint = this.screenToPlane(event.clientX, event.clientY);
+    if (this.isActive && this.startPoint) {
+      const p = this.screenToPlane(event.clientX, event.clientY);
+      if (p) this.endPoint = this.applySnapping(p);
+    }
   }
+  
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
-    if (!this.startPoint) this.startPoint = p;
-    else {
-      this.endPoint = p;
+    
+    const snapped = this.applySnapping(p);
+    
+    if (!this.startPoint) {
+      this.startPoint = snapped;
+    } else {
+      this.endPoint = snapped;
       this.sketcher.addEntity(SketchEntityFactory.line(this.startPoint, this.endPoint));
       this.reset();
     }
   }
+  
   handleRightClick(event: MouseEvent): void { this.reset(); }
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getStartPoint() { return this.startPoint; }
@@ -226,23 +355,29 @@ export class LineTool extends SketchTool {
 export class CircleTool extends SketchTool {
   private center: Point2D | null = null;
   private radius: number = 0;
+  
   reset(): void { this.center = null; this.radius = 0; }
+  
   handleMouseMove(event: MouseEvent): void {
     if (this.isActive && this.center) {
         const p = this.screenToPlane(event.clientX, event.clientY);
         if(p) this.radius = vecDist(p, this.center);
     }
   }
+  
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
-    if (!this.center) this.center = p;
-    else {
+    
+    if (!this.center) {
+      this.center = this.applySnapping(p);
+    } else {
         if (this.radius > 0.1) this.sketcher.addEntity(SketchEntityFactory.circle(this.center, this.radius));
         this.reset();
     }
   }
+  
   handleRightClick(event: MouseEvent): void { this.reset(); }
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getCenter() { return this.center; }
@@ -252,23 +387,36 @@ export class CircleTool extends SketchTool {
 export class RectangleTool extends SketchTool {
   private corner: Point2D | null = null;
   private oppositeCorner: Point2D | null = null;
+  
   reset(): void { this.corner = null; this.oppositeCorner = null; }
+  
   handleMouseMove(event: MouseEvent): void {
-    if (this.isActive && this.corner) this.oppositeCorner = this.screenToPlane(event.clientX, event.clientY);
+    if (this.isActive && this.corner) {
+      const p = this.screenToPlane(event.clientX, event.clientY);
+      if (p) this.oppositeCorner = this.applySnapping(p);
+    }
   }
+  
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
-    if (!this.corner) this.corner = p;
-    else {
-        this.oppositeCorner = p;
+    
+    const snapped = this.applySnapping(p);
+    
+    if (!this.corner) {
+      this.corner = snapped;
+    } else {
+        this.oppositeCorner = snapped;
         const w = this.oppositeCorner.x - this.corner.x;
         const h = this.oppositeCorner.y - this.corner.y;
-        if (Math.abs(w) > 0.1 && Math.abs(h) > 0.1) this.sketcher.addEntity(SketchEntityFactory.rectangle(this.corner, w, h));
+        if (Math.abs(w) > 0.1 && Math.abs(h) > 0.1) {
+          this.sketcher.addEntity(SketchEntityFactory.rectangle(this.corner, w, h));
+        }
         this.reset();
     }
   }
+  
   handleRightClick(event: MouseEvent): void { this.reset(); }
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getCorner() { return this.corner; }
@@ -277,7 +425,7 @@ export class RectangleTool extends SketchTool {
 
 /**
  * ============================================================================
- * NARZĘDZIA EDYCJI (TRIM, EXTEND, OFFSET)
+ * EDITING TOOLS
  * ============================================================================
  */
 
@@ -294,10 +442,9 @@ export class TrimTool extends SketchTool {
 
     const entities = this.sketcher.getEntities();
     
-    // 1. Znajdź segment-ofiarę (używamy HIT_TOLERANCE)
     let targetEntityId: string | null = null;
     let targetSegment: { p1: Point2D, p2: Point2D } | null = null;
-    let minDist = HIT_TOLERANCE; // Większa tolerancja!
+    let minDist = HIT_TOLERANCE;
 
     for (const entity of entities) {
         const segments = getSegmentsFromEntity(entity);
@@ -313,22 +460,17 @@ export class TrimTool extends SketchTool {
 
     if (!targetEntityId || !targetSegment) return;
 
-    // 2. Zbierz bariery
     const allSegments: { p1: Point2D, p2: Point2D }[] = [];
     entities.forEach(ent => {
         allSegments.push(...getSegmentsFromEntity(ent));
     });
 
-    // 3. Oblicz Trim
     const resultSegments = calculateTrim(targetSegment, clickPoint, allSegments);
 
     if (resultSegments) {
-        // Explode on modify
         const oldEntity = this.sketcher.getEntity(targetEntityId);
         const oldSegments = getSegmentsFromEntity(oldEntity);
         
-        // Znajdź usuwany segment w starej figurze (porównanie po wartościach)
-        // (Uproszczone: zakładamy że współrzędne są identyczne)
         const segIdx = oldSegments.findIndex(s => 
             Math.abs(s.p1.x - targetSegment!.p1.x) < 0.001 && 
             Math.abs(s.p1.y - targetSegment!.p1.y) < 0.001 &&
@@ -338,14 +480,12 @@ export class TrimTool extends SketchTool {
 
         this.sketcher.removeEntity(targetEntityId);
 
-        // Dodaj stare nietknięte
         oldSegments.forEach((seg, idx) => {
             if (idx !== segIdx) {
                 this.sketcher!.addEntity(SketchEntityFactory.line(seg.p1, seg.p2));
             }
         });
 
-        // Dodaj nowe pocięte
         resultSegments.forEach(seg => {
             this.sketcher!.addEntity(SketchEntityFactory.line(seg.p1, seg.p2));
         });
@@ -368,13 +508,11 @@ export class ExtendTool extends SketchTool {
 
     const entities = this.sketcher.getEntities();
     
-    // 1. Znajdź linię do przedłużenia
     let targetEntityId: string | null = null;
     let targetSegment: { p1: Point2D, p2: Point2D } | null = null;
     let minDist = HIT_TOLERANCE;
 
     for (const entity of entities) {
-        // Tylko linie proste dla Extend (dla uproszczenia)
         if (entity.type === 'line') {
             const proj = projectPointOnLine(clickPoint, entity.start, entity.end);
             if (proj.dist < minDist) {
@@ -387,7 +525,6 @@ export class ExtendTool extends SketchTool {
 
     if (!targetEntityId || !targetSegment) return;
 
-    // 2. Bariery
     const barrierSegments: { p1: Point2D, p2: Point2D }[] = [];
     entities.forEach(ent => {
         if (ent.id !== targetEntityId) {
@@ -395,7 +532,6 @@ export class ExtendTool extends SketchTool {
         }
     });
 
-    // 3. Extend
     const newCoords = calculateExtend(targetSegment, clickPoint, barrierSegments);
 
     if (newCoords) {
@@ -408,11 +544,8 @@ export class ExtendTool extends SketchTool {
   }
 }
 
-// --- POPRAWIONY OFFSET (2 ETAPY: WYBÓR -> STRONA) ---
-
 export class OffsetTool extends SketchTool {
   private selectedId: string | null = null;
-  // Przechowujemy oryginalne punkty wybranej figury, żeby nie pobierać ich ciągle
   private sourceChain: Point2D[] = []; 
   private isClosed: boolean = false;
 
@@ -422,20 +555,15 @@ export class OffsetTool extends SketchTool {
     this.isClosed = false;
   }
 
-  handleMouseMove(event: MouseEvent): void {
-    // Tu można dodać podgląd (ghost) offsetu, jeśli mamy this.selectedId
-  }
-
-  handleKeyDown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') this.reset();
-  }
+  handleMouseMove(event: MouseEvent): void {}
+  handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
+  handleRightClick(event: MouseEvent): void { this.reset(); }
 
   handleClick(event: MouseEvent): void {
     if (!this.isActive || !this.sketcher) return;
     const point = this.screenToPlane(event.clientX, event.clientY);
     if (!point) return;
 
-    // FAZA 1: Brak wyboru -> Wybierz figurę
     if (!this.selectedId) {
       let minDist = HIT_TOLERANCE;
       const entities = this.sketcher.getEntities();
@@ -452,7 +580,6 @@ export class OffsetTool extends SketchTool {
       }
       
       if (this.selectedId) {
-          // Przygotuj dane figury
           const entity = this.sketcher.getEntity(this.selectedId);
           if (entity.type === 'line') {
               this.sourceChain = [entity.start, entity.end];
@@ -471,29 +598,18 @@ export class OffsetTool extends SketchTool {
           }
           console.log("Offset: Selected. Now click to indicate side.");
       }
-      return; // Czekamy na drugie kliknięcie
+      return;
     }
 
-    // FAZA 2: Mamy wybraną figurę -> Wskazanie strony i dystansu
-    // Użytkownik kliknął gdzieś w przestrzeni (point), co wskazuje stronę.
-    
-    // Obliczamy orientacyjny dystans od kursora do figury (dla domyślnej wartości w prompt)
-    // Ale ważniejsza jest strona.
-    
     const input = prompt("Podaj odległość offsetu:", "10");
     if (input !== null) {
         let distVal = parseFloat(input.replace(',', '.'));
         if (!isNaN(distVal) && distVal !== 0) {
-            
-            // Oblicz dwa warianty (lewo/prawo)
-            // Zakładamy, że distVal jest dodatnie (np. 10), a my decydujemy o znaku
             distVal = Math.abs(distVal);
 
             const resPos = calculateOffsetChain(this.sourceChain, distVal);
             const resNeg = calculateOffsetChain(this.sourceChain, -distVal);
             
-            // Sprawdzamy, który wynik jest bliżej punktu kliknięcia (point)
-            // Bierzemy środek pierwszego segmentu wyniku jako próbkę
             const midPos = { x: (resPos[0].x + resPos[1].x)/2, y: (resPos[0].y + resPos[1].y)/2 };
             const midNeg = { x: (resNeg[0].x + resNeg[1].x)/2, y: (resNeg[0].y + resNeg[1].y)/2 };
             
@@ -503,17 +619,17 @@ export class OffsetTool extends SketchTool {
             const finalPoints = (dPos < dNeg) ? resPos : resNeg;
 
             if (finalPoints.length > 0) {
-                // Jeśli oryginał był zamknięty (Rect/Closed Poly), wynik też traktujemy jako zamknięty
-                // (Funkcja calculateOffsetChain zwraca otwarty łańcuch punktów, ale dla zamkniętych pierwszy i ostatni punkt powinny się zejść)
-                
-                // Dodajemy nową geometrię
                 this.sketcher.addEntity(SketchEntityFactory.polyline(finalPoints, this.isClosed));
                 console.log("Offset created.");
             }
         }
     }
     
-    // Reset po wykonaniu
     this.reset();
+  }
+
+  getPreviewArrow() {
+    // For preview in SketchPreview component
+    return null;
   }
 }

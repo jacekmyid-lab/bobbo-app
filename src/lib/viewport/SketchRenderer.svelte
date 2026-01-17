@@ -15,7 +15,8 @@
     selected: '#f59e0b',     // Amber
     hovered: '#22c55e',      // Green
     construction: '#6366f1', // Indigo
-    point: '#ff0000'         // CZERWONY
+    point: '#ff0000',        // CZERWONY
+    closedProfile: '#00ff00' // ZIELONY dla zamkniętych profili
   };
 
   // Convert 2D point to 3D using plane coordinates
@@ -47,14 +48,54 @@
     
     return { geometry, material, position: midpoint };
   }
+
+  // Check if entity is part of a closed profile
+  function isPartOfClosedProfile(entity: SketchEntity): boolean {
+    // Standalone closed shapes
+    if (entity.type === 'circle' || entity.type === 'rectangle') return true;
+    if (entity.type === 'polyline' && entity.closed) return true;
+    
+    // Check if entity is part of a closed chain
+    if (entity.connections && entity.connections.length >= 2) {
+      // Try to find a closed loop
+      const visited = new Set<string>();
+      const stack = [entity.id];
+      
+      while (stack.length > 0) {
+        const currentId = stack.pop()!;
+        if (visited.has(currentId)) {
+          // Found a cycle - it's closed!
+          return true;
+        }
+        visited.add(currentId);
+        
+        const current = entities.find(e => e.id === currentId);
+        if (!current || !current.connections) continue;
+        
+        for (const connId of current.connections) {
+          if (!visited.has(connId)) {
+            stack.push(connId);
+          } else if (connId === entity.id && visited.size > 2) {
+            return true; // Cycle back to start
+          }
+        }
+        
+        // Limit search depth to avoid infinite loops
+        if (visited.size > 100) break;
+      }
+    }
+    
+    return false;
+  }
 </script>
 
 {#each entities as entity (entity.id)}
   {@const isSelected = selectedEntityIds.includes(entity.id)}
   {@const isHovered = hoveredEntityId === entity.id}
+  {@const isClosed = isPartOfClosedProfile(entity)}
   
   {@const color = isSelected ? 
-    COLORS.selected : (isHovered ? COLORS.hovered : (entity.construction ? COLORS.construction : COLORS.normal))}
+    COLORS.selected : (isHovered ? COLORS.hovered : (isClosed ? COLORS.closedProfile : (entity.construction ? COLORS.construction : COLORS.normal)))}
   
   {@const lineThickness = isSelected || isHovered ? 0.4 : 0.3}
   {@const pointSize = isSelected || isHovered ? 1.0 : 0.8}
