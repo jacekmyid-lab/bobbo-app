@@ -241,6 +241,21 @@
   let pointMarkers = $derived(getPointMarkers());
   let isOffsetTool = $derived(toolType === 'sketch-offset');
   let previewColor = $derived(isOffsetTool ? '#f59e0b' : '#06b6d4');
+  
+  // Get snap info for visual feedback
+  let snapInfo = $derived.by(() => {
+    if (!tool) return null;
+    if ('getSnapInfo' in tool && typeof tool.getSnapInfo === 'function') {
+      return tool.getSnapInfo();
+    }
+    return null;
+  });
+  
+  // Get snap point position in 3D
+  let snapPosition = $derived.by(() => {
+    if (!snapInfo) return null;
+    return planeToWorld(snapInfo.point.x, snapInfo.point.y);
+  });
 </script>
 
 <!-- Preview thick lines -->
@@ -278,5 +293,26 @@
   <T.Mesh position={[endPos.x, endPos.y, endPos.z]}>
     <T.SphereGeometry args={[0.8, 16, 16]} />
     <T.MeshBasicMaterial color="#f59e0b" />
+  </T.Mesh>
+{/if}
+
+<!-- Snap indicator - bright cyan/magenta square -->
+{#if snapPosition}
+  <!-- Outer glow ring -->
+  <T.Mesh position={[snapPosition.x, snapPosition.y, snapPosition.z]}>
+    <T.RingGeometry args={[1.2, 1.8, 16]} />
+    <T.MeshBasicMaterial color="#00ffff" transparent opacity={0.6} />
+  </T.Mesh>
+  
+  <!-- Inner snap marker -->
+  <T.Mesh position={[snapPosition.x, snapPosition.y, snapPosition.z]}>
+    <T.BoxGeometry args={[1.5, 1.5, 0.1]} />
+    <T.MeshBasicMaterial color="#ff00ff" />
+  </T.Mesh>
+  
+  <!-- Pulsing effect - small center dot -->
+  <T.Mesh position={[snapPosition.x, snapPosition.y, snapPosition.z]}>
+    <T.SphereGeometry args={[0.4, 16, 16]} />
+    <T.MeshBasicMaterial color="#ffffff" />
   </T.Mesh>
 {/if}

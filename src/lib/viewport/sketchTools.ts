@@ -219,9 +219,10 @@ export abstract class SketchTool {
 
   /**
    * Apply snapping to a point
+   * Returns both the snapped point and snap info for visual feedback
    */
-  protected applySnapping(point: Point2D): Point2D {
-    if (!this.sketcher) return point;
+  protected applySnapping(point: Point2D): { point: Point2D, snapInfo: SnapPoint | null } {
+    if (!this.sketcher) return { point, snapInfo: null };
     
     if (!this.snapFinder) {
       this.snapFinder = new SnapPointFinder(this.sketcher.getEntities());
@@ -231,7 +232,17 @@ export abstract class SketchTool {
     }
     
     const snap = this.snapFinder.findNearestSnap(point);
-    return snap ? snap.point : point;
+    return { 
+      point: snap ? snap.point : point, 
+      snapInfo: snap 
+    };
+  }
+  
+  /**
+   * Get current snap info for visual feedback
+   */
+  getSnapInfo(): SnapPoint | null {
+    return null; // Override in subclasses
   }
 
   activate(): void { this.isActive = true; }
@@ -248,14 +259,28 @@ export abstract class SketchTool {
 export class PolylineTool extends SketchTool {
   private points: Point2D[] = [];
   private currentPoint: Point2D | null = null;
+  private currentSnapInfo: SnapPoint | null = null;
+  private firstPointSnapInfo: SnapPoint | null = null; // Snap info dla pierwszego punktu
   
-  reset(): void { this.points = []; this.currentPoint = null; }
+  reset(): void { 
+    this.points = []; 
+    this.currentPoint = null; 
+    this.currentSnapInfo = null;
+    this.firstPointSnapInfo = null;
+  }
   
   handleMouseMove(event: MouseEvent): void {
     if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if(p) {
-        const snapped = this.applySnapping(p);
+        const { point: snapped, snapInfo } = this.applySnapping(p);
+        
+        // Jeśli nie mamy jeszcze żadnych punktów, pokaż snap dla pierwszego punktu
+        if (this.points.length === 0) {
+          this.firstPointSnapInfo = snapInfo;
+        } else {
+          this.currentSnapInfo = snapInfo;
+        }
         
         // Snap to start for closing
         if (this.points.length > 2 && vecDist(snapped, this.points[0]) < SNAP_DISTANCE) {
@@ -271,10 +296,12 @@ export class PolylineTool extends SketchTool {
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
 
-    const snapped = this.applySnapping(p);
+    const { point: snapped } = this.applySnapping(p);
 
     if (this.points.length === 0) {
         this.points.push(snapped);
+        // Po kliknięciu pierwszego punktu, wyczyść firstPointSnapInfo
+        this.firstPointSnapInfo = null;
     } 
     else {
         // Check if closing (click near start)
@@ -309,6 +336,14 @@ export class PolylineTool extends SketchTool {
   
   getPoints() { return this.points; }
   getCurrentPoint() { return this.currentPoint; }
+  getSnapInfo() { 
+    // Jeśli nie mamy jeszcze punktów, zwróć snap info dla pierwszego punktu
+    if (this.points.length === 0) {
+      return this.firstPointSnapInfo;
+    }
+    // W przeciwnym razie zwróć snap info dla aktualnego punktu
+    return this.currentSnapInfo; 
+  }
   
   canClose(): boolean {
     if (this.points.length < 3) return false;
@@ -320,13 +355,30 @@ export class PolylineTool extends SketchTool {
 export class LineTool extends SketchTool {
   private startPoint: Point2D | null = null;
   private endPoint: Point2D | null = null;
+  private currentSnapInfo: SnapPoint | null = null;
+  private startPointSnapInfo: SnapPoint | null = null; // Snap info dla punktu startowego
   
-  reset(): void { this.startPoint = null; this.endPoint = null; }
+  reset(): void { 
+    this.startPoint = null; 
+    this.endPoint = null; 
+    this.currentSnapInfo = null;
+    this.startPointSnapInfo = null;
+  }
   
   handleMouseMove(event: MouseEvent): void {
-    if (this.isActive && this.startPoint) {
-      const p = this.screenToPlane(event.clientX, event.clientY);
-      if (p) this.endPoint = this.applySnapping(p);
+    if (!this.isActive) return;
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (!p) return;
+    
+    const { point: snapped, snapInfo } = this.applySnapping(p);
+    
+    if (!this.startPoint) {
+      // Jeśli nie mamy jeszcze punktu startowego, pokaż snap dla niego
+      this.startPointSnapInfo = snapInfo;
+    } else {
+      // Jeśli już mamy punkt startowy, pokaż snap dla końcowego
+      this.endPoint = snapped;
+      this.currentSnapInfo = snapInfo;
     }
   }
   
@@ -335,10 +387,12 @@ export class LineTool extends SketchTool {
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
     
-    const snapped = this.applySnapping(p);
+    const { point: snapped } = this.applySnapping(p);
     
     if (!this.startPoint) {
       this.startPoint = snapped;
+      // Po kliknięciu pierwszego punktu, wyczyść startPointSnapInfo
+      this.startPointSnapInfo = null;
     } else {
       this.endPoint = snapped;
       this.sketcher.addEntity(SketchEntityFactory.line(this.startPoint, this.endPoint));
@@ -350,13 +404,26 @@ export class LineTool extends SketchTool {
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getStartPoint() { return this.startPoint; }
   getEndPoint() { return this.endPoint; }
+  getSnapInfo() { 
+    // Jeśli nie mamy punktu startowego, zwróć snap info dla niego
+    if (!this.startPoint) {
+      return this.startPointSnapInfo;
+    }
+    // W przeciwnym razie zwróć snap info dla końcowego punktu
+    return this.currentSnapInfo; 
+  }
 }
 
 export class CircleTool extends SketchTool {
   private center: Point2D | null = null;
   private radius: number = 0;
+  private currentSnapInfo: SnapPoint | null = null;
   
-  reset(): void { this.center = null; this.radius = 0; }
+  reset(): void { 
+    this.center = null; 
+    this.radius = 0; 
+    this.currentSnapInfo = null;
+  }
   
   handleMouseMove(event: MouseEvent): void {
     if (this.isActive && this.center) {
@@ -371,7 +438,9 @@ export class CircleTool extends SketchTool {
     if (!p) return;
     
     if (!this.center) {
-      this.center = this.applySnapping(p);
+      const { point: snapped, snapInfo } = this.applySnapping(p);
+      this.center = snapped;
+      this.currentSnapInfo = snapInfo;
     } else {
         if (this.radius > 0.1) this.sketcher.addEntity(SketchEntityFactory.circle(this.center, this.radius));
         this.reset();
@@ -382,18 +451,36 @@ export class CircleTool extends SketchTool {
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getCenter() { return this.center; }
   getRadius() { return this.radius; }
+  getSnapInfo() { return this.currentSnapInfo; }
 }
 
 export class RectangleTool extends SketchTool {
   private corner: Point2D | null = null;
   private oppositeCorner: Point2D | null = null;
+  private currentSnapInfo: SnapPoint | null = null;
+  private cornerSnapInfo: SnapPoint | null = null; // Snap info dla pierwszego rogu
   
-  reset(): void { this.corner = null; this.oppositeCorner = null; }
+  reset(): void { 
+    this.corner = null; 
+    this.oppositeCorner = null; 
+    this.currentSnapInfo = null;
+    this.cornerSnapInfo = null;
+  }
   
   handleMouseMove(event: MouseEvent): void {
-    if (this.isActive && this.corner) {
-      const p = this.screenToPlane(event.clientX, event.clientY);
-      if (p) this.oppositeCorner = this.applySnapping(p);
+    if (!this.isActive) return;
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (!p) return;
+    
+    const { point: snapped, snapInfo } = this.applySnapping(p);
+    
+    if (!this.corner) {
+      // Jeśli nie mamy jeszcze pierwszego rogu, pokaż snap dla niego
+      this.cornerSnapInfo = snapInfo;
+    } else {
+      // Jeśli już mamy pierwszy róg, pokaż snap dla przeciwnego
+      this.oppositeCorner = snapped;
+      this.currentSnapInfo = snapInfo;
     }
   }
   
@@ -402,10 +489,12 @@ export class RectangleTool extends SketchTool {
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
     
-    const snapped = this.applySnapping(p);
+    const { point: snapped } = this.applySnapping(p);
     
     if (!this.corner) {
       this.corner = snapped;
+      // Po kliknięciu pierwszego rogu, wyczyść cornerSnapInfo
+      this.cornerSnapInfo = null;
     } else {
         this.oppositeCorner = snapped;
         const w = this.oppositeCorner.x - this.corner.x;
@@ -421,6 +510,14 @@ export class RectangleTool extends SketchTool {
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getCorner() { return this.corner; }
   getOppositeCorner() { return this.oppositeCorner; }
+  getSnapInfo() { 
+    // Jeśli nie mamy pierwszego rogu, zwróć snap info dla niego
+    if (!this.corner) {
+      return this.cornerSnapInfo;
+    }
+    // W przeciwnym razie zwróć snap info dla przeciwnego rogu
+    return this.currentSnapInfo; 
+  }
 }
 
 /**
@@ -581,6 +678,11 @@ export class OffsetTool extends SketchTool {
       
       if (this.selectedId) {
           const entity = this.sketcher.getEntity(this.selectedId);
+          if (!entity) {
+            this.reset();
+            return;
+          }
+          
           if (entity.type === 'line') {
               this.sourceChain = [entity.start, entity.end];
               this.isClosed = false;
