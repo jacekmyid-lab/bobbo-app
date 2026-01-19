@@ -1,8 +1,11 @@
 <script lang="ts">
+  // --- 1. IMPORTY BIBLIOTEK ---
   import { onMount } from 'svelte';
   import { Canvas, T } from '@threlte/core';
   import { OrbitControls } from '@threlte/extras';
   import * as THREE from 'three';
+
+  // --- 2. IMPORTY STORES (STAN APLIKACJI) ---
   import { 
     viewportStore,
     sketchEditStore,
@@ -12,78 +15,184 @@
     documentStore,
     toolStore,
     selectionModeStore,
-    selectionStore // Dodano brakujący import
+    selectionStore
   } from '$lib/stores/cadStore';
+
+  // --- 3. KOMPONENTY WIDOKU I SCENY ---
   import SceneContent from './SceneContent.svelte';
   import ViewportOverlay from './ViewportOverlay.svelte';
+  
+  // --- 4. KOMPONENTY SZKICOWNIKA ---
   import SketchGrid from './SketchGrid.svelte';
   import SketchPreview from './SketchPreview.svelte';
-  import SketchRenderer from './SketchRenderer.svelte'; // Komponent do renderowania gotowych linii
+  import SketchRenderer from './SketchRenderer.svelte';
   import SketchToolInstructions from './SketchToolInstructions.svelte';
+  import ConstraintRenderer from './ConstraintRenderer.svelte';
+
+  // --- 5. LOGIKA I NARZEDZIA ---
   import { useViewportInteraction } from './viewportInteraction';
   import { useCameraAnimation } from './cameraAnimation';
-  import { PolylineTool, LineTool, CircleTool, RectangleTool, TrimTool, ExtendTool, OffsetTool } from './sketchTools';
+  import { 
+    PolylineTool, 
+    LineTool, 
+    CircleTool, 
+    RectangleTool, 
+    TrimTool, 
+    ExtendTool, 
+    OffsetTool 
+  } from './sketchTools';
   import { createSketcher } from '$lib/sketcher/Sketcher';
-  import type { SketchEntity } from '$lib/core/types';
+  
+  // --- 6. TYPY ---
+  // DODANO: SketchNode, Point2D
+  import type { SketchEntity, Constraint, SketchNode, Point2D } from '$lib/core/types';
 
-  // --- ZMIENNE STANU (Reactive Stores) ---
+
+  // ==========================================================================
+  // SEKCJA ZMIENNYCH STANU (REACTIVE STORES & STATE)
+  // ==========================================================================
+
+  // --- Konfiguracja globalna ---
   let viewportConfig = $derived($viewportStore);
   let isSketchMode = $derived($sketchEditStore.isEditing);
   let sketchPlaneId = $derived($sketchEditStore.planeId);
   
-  // Naprawione zmienne (brakowało ich wcześniej)
+  // --- Modele i selekcja ---
   let activeModelId = $derived($activeModelStore);
   let solids = $derived($solidStore);
   let activeSolid = $derived(activeModelId ? solids.get(activeModelId) : null);
-
+  let selectionMode = $derived($selectionModeStore);
+  
+  // --- Dane dokumentu ---
   let pivotUpdate = $derived($pivotUpdateStore);
   let planes = $derived($documentStore.planes);
-  let selectionMode = $derived($selectionModeStore);
 
-  // --- REFERENCJE SCENY ---
+  // --- Referencje do elementow DOM i Three.js ---
   let canvasContainer: HTMLDivElement;
-  let scene: THREE.Scene | null = null;
+  let scene: THREE.Scene | null = null; 
   let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
   let controls: any = null;
 
-  // --- NARZĘDZIA SZKICOWNIKA ---
+  // --- Stan Szkicownika ---
   let sketcher = $state<any>(null);
   let currentToolType = $state<string>('');
- let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | TrimTool | ExtendTool | OffsetTool | null>(null);
-  // ... inne zmienne derived ...
-let activeToolName = $derived($toolStore.activeTool);
-let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset'].includes(activeToolName));
-  // NOWE: Stan dla renderowania szkicu
-  let sketchEntities = $state<SketchEntity[]>([]);
-  let uiUpdateTrigger = $state(0); // Wymusza odświeżanie podglądu przy ruchu myszy
+  let activeTool = $state<PolylineTool | LineTool | CircleTool | RectangleTool | TrimTool | ExtendTool | OffsetTool | null>(null);
+  
+  let activeToolName = $derived($toolStore.activeTool);
+  // Sprawdzenie czy narzedzie wymaga precyzyjnego kursora
+  let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset', 'vertical-constraint', 'horizontal-constraint' ].includes(activeToolName));
 
-  // --- ANIMACJA KAMERY ---
+  // --- Dane do renderowania szkicu ---
+  let sketchConstraints = $state<Constraint[]>([]);
+  let sketchEntities = $state<SketchEntity[]>([]);
+  // NOWE: Węzły i Profile
+  let sketchNodes = $state<Map<string, SketchNode>>(new Map());
+  let sketchProfiles = $state<Point2D[][]>([]);
+
+  let uiUpdateTrigger = $state(0); // Wymusza odswiezanie UI
+
+  // --- Animacja i Grid ---
   const cameraAnim = useCameraAnimation(planes, () => solids);
   let animating = $state(false);
   let sketchBasis = $state<any>(null);
 
-  // --- EFEKTY (LOGIKA) ---
 
-  // Inicjalizacja szkicownika przy wejściu w tryb Sketch
+  // ==========================================================================
+  // SEKCJA FUNKCJI POMOCNICZYCH
+  // ==========================================================================
+
+  // Funkcja odswiezajaca stan encji i wiezow ze sketchera
+  function refreshSketchState() {
+    if (sketcher) {
+      // Pobieramy wszystko: Encje, Więzy, Węzły i Profile
+      sketchEntities = [...sketcher.getEntities()];
+      sketchConstraints = [...sketcher.getAllConstraints()];
+      
+      // Kopiujemy mapę węzłów, aby wymusić reaktywność Svelte 5
+      sketchNodes = new Map(sketcher.getNodes());
+      
+      // Pobieramy zamknięte obszary do wypełnienia
+      sketchProfiles = sketcher.getClosedContours();
+      
+      uiUpdateTrigger += 1;
+    }
+  }
+
+  // Obliczenia dla renderowania (Pivot, Grid, Camera Type)
+  let showWorldGrid = $derived(viewportConfig.showGrid && !isSketchMode);
+  let cameraType: 'perspective' | 'orthographic' = $derived(isSketchMode ? 'orthographic' : 'perspective');
+  
+  let pivotPos = $state({ x: 0, y: 0, z: 0 });
+  
+  // Aktualizacja pozycji pivota
+  $effect(() => {
+    const _ = pivotUpdate; // Subskrypcja zmian
+    if (activeSolid) {
+      pivotPos = {
+        x: activeSolid.position.x + activeSolid.pivot.x,
+        y: activeSolid.position.y + activeSolid.pivot.y,
+        z: activeSolid.position.z + activeSolid.pivot.z
+      };
+    }
+  });
+
+
+  // ==========================================================================
+  // SEKCJA HOOKOW I INTERAKCJI
+  // ==========================================================================
+
+  // Glowny hook interakcji (mysz, raycasting)
+  const { handleMouseMove, handleClick, handleKeyDown, handleKeyUp } = useViewportInteraction(
+    () => canvasContainer,
+    () => camera,
+    () => scene,
+    () => solids,
+    () => sketcher,      
+    refreshSketchState   
+  );
+
+  // Callbacki Threlte (tworzenie obiektow)
+  function onCameraCreate(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
+    camera = cam;
+    if (cam.parent) scene = cam.parent as THREE.Scene;
+  }
+
+  function onControlsCreate(ctrl: any) {
+    controls = ctrl;
+  }
+
+
+  // ==========================================================================
+  // SEKCJA EFEKTOW (LIFECYCLE & LOGIC)
+  // ==========================================================================
+
+  // Efekt 1: Inicjalizacja szkicownika
   $effect(() => {
     if (isSketchMode && sketchPlaneId && !sketcher) {
       const plane = planes.get(sketchPlaneId);
       if (plane) {
         sketcher = createSketcher($sketchEditStore.sketchId || 'temp', plane);
-        // Załaduj istniejące encje jeśli są
-        sketchEntities = sketcher.getEntities(); 
+        // Zaladuj dane i odswiez WSZYSTKIE stany (wezly, encje, profile)
+        if ($sketchEditStore.sketchId) {
+             // Tu mozna by dodac ladowanie z zapisanego modelu, 
+             // ale createSketcher tworzy nowy pusty lub laduje jesli zaimplementujemy load
+        }
+        refreshSketchState(); 
+        
         console.log('[Viewport] ✅ Sketcher created for plane:', plane.name);
       }
     } else if (!isSketchMode) {
-      // Sprzątanie po wyjściu
+      // Sprzatanie
       sketcher = null;
       activeTool = null;
       currentToolType = '';
       sketchEntities = [];
+      sketchNodes = new Map();
+      sketchProfiles = [];
     }
   });
 
-  // Obsługa zmiany narzędzia (Active Tool)
+  // Efekt 2: Zarzadzanie narzedziami (Active Tool)
   $effect(() => {
     const newToolType = $toolStore.activeTool;
     
@@ -99,11 +208,13 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
 
     if (newToolType === currentToolType) return;
 
+    // Dezaktywacja starego narzedzia
     if (activeTool) {
       activeTool.deactivate();
       activeTool = null;
     }
 
+    // Aktywacja nowego narzedzia
     if (newToolType.startsWith('sketch-')) {
       const plane = planes.get(sketchPlaneId);
       if (!plane) return;
@@ -134,21 +245,7 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
     }
   });
 
-  // Interakcja z viewportem (Standardowa)
-  const {
-    handleMouseMove,
-    handleClick,
-    handleDoubleClick,
-    handleContextMenu,
-    handleKeyDown
-  } = useViewportInteraction(
-    () => canvasContainer,
-    () => camera,
-    () => scene,
-    () => solids
-  );
-
-  // Animacja kamery przy wejściu/wyjściu ze szkicownika
+  // Efekt 3: Animacja kamery
   $effect(() => {
     if (isSketchMode && sketchPlaneId && camera && controls) {
       cameraAnim.enterSketchMode(sketchPlaneId, camera, controls);
@@ -157,24 +254,17 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
     }
   });
 
-  // Callbacks Threlte
-  function onCameraCreate(cam: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
-    camera = cam;
-    if (cam.parent) scene = cam.parent as THREE.Scene;
-  }
 
-  function onControlsCreate(ctrl: any) {
-    controls = ctrl;
-  }
-
-  // --- OBSŁUGA ZDARZEŃ (Unified Handlers) ---
+  // ==========================================================================
+  // SEKCJA HANDLEROW ZDARZEN (EVENT HANDLERS)
+  // ==========================================================================
 
   function handleCanvasClick(e: MouseEvent) {
     if (isSketchMode && activeTool) {
       activeTool.handleClick(e);
-      // Aktualizacja UI po kliknięciu (np. dodanie punktu)
-      uiUpdateTrigger++;
-      if (sketcher) sketchEntities = [...sketcher.getEntities()];
+      // Uzywamy refreshSketchState zamiast recznego pobierania entities
+      // To zapewnia, ze wezly i profile tez sie aktualizuja
+      refreshSketchState();
     } else {
       handleClick(e);
     }
@@ -185,8 +275,7 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
       e.preventDefault();
       e.stopPropagation();
       activeTool.handleRightClick(e);
-      uiUpdateTrigger++;
-      if (sketcher) sketchEntities = [...sketcher.getEntities()];
+      refreshSketchState();
     } else {
       handleContextMenu(e);
     }
@@ -195,31 +284,39 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
   function handleCanvasMouseMove(e: MouseEvent) {
     if (isSketchMode && activeTool) {
       activeTool.handleMouseMove(e);
-      uiUpdateTrigger++; // Wymusza odświeżenie podglądu (SketchPreview)
+      // Opcjonalnie: mozna ograniczyc czestotliwosc odswiezania tutaj jesli bedzie mulic
+      uiUpdateTrigger++; 
     } else {
       handleMouseMove(e);
     }
   }
 
   function handleCanvasDoubleClick(e: MouseEvent) {
-    if (!isSketchMode) handleDoubleClick(e);
+    if (!isSketchMode) handleClick(e); 
   }
 
   function handleGlobalKeyDown(e: KeyboardEvent) {
     if (isSketchMode && activeTool) {
       activeTool.handleKeyDown(e);
-      uiUpdateTrigger++;
-      if (sketcher) sketchEntities = [...sketcher.getEntities()];
+      refreshSketchState();
     }
     handleKeyDown(e);
   }
 
-  // --- CYKL ŻYCIA ---
+
+  // ==========================================================================
+  // SEKCJA ONMOUNT (LISTENERY OKNA)
+  // ==========================================================================
+
   onMount(() => {
+    // Subskrypcje store'ow animacji
     const unsubAnim = cameraAnim.animatingStore.subscribe(v => { animating = v; });
     const unsubBasis = cameraAnim.sketchBasisStore.subscribe(v => { sketchBasis = v; });
+    
+    // Globalne listenery klawiatury
     window.addEventListener('keydown', handleGlobalKeyDown);
 
+    // Petla animacji
     let animFrame: number;
     const animate = () => {
       cameraAnim.updateAnimation(camera, controls);
@@ -227,30 +324,46 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
     };
     animFrame = requestAnimationFrame(animate);
     
+    // Listenery Custom Events dla Constraintow
+    const handleVerticalConstraint = (e: CustomEvent) => {
+      if (sketcher && e.detail.entityId) {
+        const result = sketcher.addVerticalConstraint(e.detail.entityId);
+        if (result.success) {
+          console.log('[Viewport] ✓ Applied vertical constraint');
+          refreshSketchState();
+        } else {
+          console.error('[Viewport] ✗ Failed:', result.error);
+        }
+      }
+    };
+
+    const handleHorizontalConstraint = (e: CustomEvent) => {
+      if (sketcher && e.detail.entityId) {
+        const result = sketcher.addHorizontalConstraint(e.detail.entityId);
+        if (result.success) {
+          console.log('[Viewport] ✓ Applied horizontal constraint');
+          refreshSketchState();
+        } else {
+          console.error('[Viewport] ✗ Failed:', result.error);
+        }
+      }
+    };
+
+    window.addEventListener('apply-vertical-constraint', handleVerticalConstraint as EventListener);
+    window.addEventListener('apply-horizontal-constraint', handleHorizontalConstraint as EventListener);
+
+    // Czyszczenie przy odmontowaniu
     return () => {
       unsubAnim();
       unsubBasis();
       window.removeEventListener('keydown', handleGlobalKeyDown);
       cancelAnimationFrame(animFrame);
+      window.removeEventListener('apply-vertical-constraint', handleVerticalConstraint as EventListener);
+      window.removeEventListener('apply-horizontal-constraint', handleHorizontalConstraint as EventListener);
     };
   });
-
-  // --- CALCULATED VALUES FOR RENDER ---
-  let showWorldGrid = $derived(viewportConfig.showGrid && !isSketchMode);
-  let cameraType: 'perspective' | 'orthographic' = $derived(isSketchMode ? 'orthographic' : 'perspective');
-  
-  let pivotPos = $state({ x: 0, y: 0, z: 0 });
-  $effect(() => {
-    const _ = pivotUpdate;
-    if (activeSolid) {
-      pivotPos = {
-        x: activeSolid.position.x + activeSolid.pivot.x,
-        y: activeSolid.position.y + activeSolid.pivot.y,
-        z: activeSolid.position.z + activeSolid.pivot.z
-      };
-    }
-  });
 </script>
+
 
 <div 
   class="cad-viewport"
@@ -331,6 +444,15 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
           <SketchRenderer 
             {plane} 
             entities={sketchEntities} 
+            nodes={sketchNodes}
+            profiles={sketchProfiles}
+          />
+
+          <ConstraintRenderer 
+            {plane} 
+            constraints={sketchConstraints}
+            entities={sketchEntities}
+            nodes={sketchNodes}
           />
 
           {#key uiUpdateTrigger}
@@ -341,6 +463,7 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
         {/if}
       {/if}
     {/if}
+    
     {#if viewportConfig.showAxes && !isSketchMode}
       <T.AxesHelper args={[50]} />
     {/if}
@@ -404,9 +527,7 @@ let isPrecisionTool = $derived(['sketch-trim', 'sketch-extend', 'sketch-offset']
     border: 1px solid #3b82f6;
   }
 
-  /* Kursor typu "Picker" - kwadrat 16x16 z pustym środkiem */
-.cursor-picker :global(canvas) {
-  cursor: url('data:image/svg+xml;utf8,<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="8" width="8" height="8" stroke="white" stroke-width="2" fill="none" style="filter: drop-shadow(1px 1px 1px black);"/></svg>') 12 12, crosshair !important;
-}
-
+  .cursor-picker :global(canvas) {
+    cursor: url('data:image/svg+xml;utf8,<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="8" width="8" height="8" stroke="white" stroke-width="2" fill="none" style="filter: drop-shadow(1px 1px 1px black);"/></svg>') 12 12, crosshair !important;
+  }
 </style>

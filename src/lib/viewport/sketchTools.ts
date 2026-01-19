@@ -1,155 +1,92 @@
 /**
- * sketchTools.ts - WITH SNAP TO POINTS
- * - Point snapping (łapanie do punktów)
- * - Closed area detection (wykrywanie zamkniętych obszarów)
- * - Polyline closing fixed
- * - Offset direction fixed
+ * sketchTools.ts - FIXED & COMPLETE
+ * - LineTool: Single segment mode (Reset after draw)
+ * - Trim: Uses split-and-delete logic
+ * - Selection: Increased tolerance
  */
 
 import * as THREE from 'three';
 import type { Point2D, Plane, SketchEntity } from '../core/types';
-import { Sketcher, SketchEntityFactory } from '../sketcher/Sketcher';
+import type { Sketcher } from '../sketcher/Sketcher';
 import { 
-  calculateTrim, 
-  calculateExtend, 
-  calculateOffsetChain, 
   projectPointOnLine,
   vecDist,
-  vecSub,
-  getLineIntersection
 } from '../geometry/SketchMath';
 
-// Tolerances
-const HIT_TOLERANCE = 1.5;
-const SNAP_DISTANCE = 5.0; // Dystans łapania do punktów
+// INCREASED TOLERANCE (easier to hit lines)
+const HIT_TOLERANCE = 2.0; 
+const SNAP_DISTANCE = 0.8;
 
-/**
- * Snap point data
- */
+// --- Helpers ---
 interface SnapPoint {
   point: Point2D;
-  type: 'endpoint' | 'midpoint' | 'center' | 'intersection';
-  entityId: string;
+  type: 'node' | 'midpoint' | 'center' | 'intersection';
+  id?: string;
 }
 
-/**
- * ============================================================================
- * HELPER: Entity to Segments Converter
- * ============================================================================
- */
-function getSegmentsFromEntity(entity: any): { p1: Point2D, p2: Point2D }[] {
+function getSegmentsFromEntity(entity: SketchEntity, sketcher: Sketcher): { p1: Point2D, p2: Point2D }[] {
   const segments: { p1: Point2D, p2: Point2D }[] = [];
+  const nodes = sketcher.getNodes();
+
+  const getP = (id: string) => {
+    const n = nodes.get(id);
+    return n ? { x: n.x, y: n.y } : { x: 0, y: 0 };
+  };
 
   if (entity.type === 'line') {
-    segments.push({ p1: entity.start, p2: entity.end });
+    segments.push({ p1: getP(entity.startNodeId), p2: getP(entity.endNodeId) });
   } 
   else if (entity.type === 'polyline') {
-    for (let i = 0; i < entity.points.length - 1; i++) {
-      segments.push({ p1: entity.points[i], p2: entity.points[i+1] });
+    for (let i = 0; i < entity.nodeIds.length - 1; i++) {
+      segments.push({ p1: getP(entity.nodeIds[i]), p2: getP(entity.nodeIds[i+1]) });
     }
     if (entity.closed) {
-        segments.push({ p1: entity.points[entity.points.length-1], p2: entity.points[0] });
+        segments.push({ p1: getP(entity.nodeIds[entity.nodeIds.length-1]), p2: getP(entity.nodeIds[0]) });
     }
   } 
   else if (entity.type === 'rectangle') {
-    const x = entity.corner.x;
-    const y = entity.corner.y;
-    const w = entity.width;
-    const h = entity.height;
-    
-    const p1 = { x, y };
-    const p2 = { x: x + w, y };
-    const p3 = { x: x + w, y: y + h };
-    const p4 = { x, y: y + h };
-
+    const p1 = getP(entity.cornerNodeId);
+    const p2 = { x: p1.x + entity.width, y: p1.y };
+    const p3 = { x: p1.x + entity.width, y: p1.y + entity.height };
+    const p4 = { x: p1.x, y: p1.y + entity.height };
     segments.push({ p1: p1, p2: p2 });
     segments.push({ p1: p2, p2: p3 });
     segments.push({ p1: p3, p2: p4 });
     segments.push({ p1: p4, p2: p1 });
   }
-
   return segments;
 }
 
-/**
- * ============================================================================
- * SNAP POINT FINDER
- * ============================================================================
- */
+// --- SNAP FINDER ---
 class SnapPointFinder {
-  private entities: SketchEntity[];
+  private sketcher: Sketcher;
   
-  constructor(entities: SketchEntity[]) {
-    this.entities = entities;
+  constructor(sketcher: Sketcher) {
+    this.sketcher = sketcher;
   }
 
-  /**
-   * Find all snap points from entities
-   */
   getAllSnapPoints(): SnapPoint[] {
     const snapPoints: SnapPoint[] = [];
+    const nodes = this.sketcher.getNodes();
+    const entities = this.sketcher.getEntities();
 
-    for (const entity of this.entities) {
-      // Endpoints
-      if (entity.type === 'line') {
-        snapPoints.push({ point: entity.start, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: entity.end, type: 'endpoint', entityId: entity.id });
-        
-        // Midpoint
-        const mid = { 
-          x: (entity.start.x + entity.end.x) / 2, 
-          y: (entity.start.y + entity.end.y) / 2 
-        };
-        snapPoints.push({ point: mid, type: 'midpoint', entityId: entity.id });
-      } 
-      else if (entity.type === 'polyline') {
-        entity.points.forEach(p => {
-          snapPoints.push({ point: p, type: 'endpoint', entityId: entity.id });
-        });
-        
-        // Midpoints of segments
-        for (let i = 0; i < entity.points.length - 1; i++) {
-          const mid = {
-            x: (entity.points[i].x + entity.points[i+1].x) / 2,
-            y: (entity.points[i].y + entity.points[i+1].y) / 2
-          };
-          snapPoints.push({ point: mid, type: 'midpoint', entityId: entity.id });
-        }
-      }
-      else if (entity.type === 'rectangle') {
-        const { x, y } = entity.corner;
-        const w = entity.width;
-        const h = entity.height;
-        
-        snapPoints.push({ point: { x, y }, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: { x: x + w, y }, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: { x: x + w, y: y + h }, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: { x, y: y + h }, type: 'endpoint', entityId: entity.id });
-        
-        // Center
-        const center = { x: x + w/2, y: y + h/2 };
-        snapPoints.push({ point: center, type: 'center', entityId: entity.id });
-      }
-      else if (entity.type === 'circle') {
-        snapPoints.push({ point: entity.center, type: 'center', entityId: entity.id });
-        
-        // Cardinal points
-        snapPoints.push({ point: { x: entity.center.x + entity.radius, y: entity.center.y }, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: { x: entity.center.x - entity.radius, y: entity.center.y }, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: { x: entity.center.x, y: entity.center.y + entity.radius }, type: 'endpoint', entityId: entity.id });
-        snapPoints.push({ point: { x: entity.center.x, y: entity.center.y - entity.radius }, type: 'endpoint', entityId: entity.id });
-      }
-      else if (entity.type === 'point') {
-        snapPoints.push({ point: entity.position, type: 'endpoint', entityId: entity.id });
-      }
+    for (const node of nodes.values()) {
+        snapPoints.push({ point: { x: node.x, y: node.y }, type: 'node', id: node.id });
     }
 
+    for (const entity of entities) {
+      if (entity.type === 'line') {
+        const n1 = nodes.get(entity.startNodeId);
+        const n2 = nodes.get(entity.endNodeId);
+        if (n1 && n2) {
+            const mid = { x: (n1.x + n2.x) / 2, y: (n1.y + n2.y) / 2 };
+            snapPoints.push({ point: mid, type: 'midpoint', id: entity.id });
+        }
+      }
+    }
     return snapPoints;
   }
 
-  /**
-   * Find nearest snap point to given point
-   */
   findNearestSnap(point: Point2D, maxDistance: number = SNAP_DISTANCE): SnapPoint | null {
     const snapPoints = this.getAllSnapPoints();
     let nearest: SnapPoint | null = null;
@@ -162,25 +99,20 @@ class SnapPointFinder {
         nearest = snap;
       }
     }
-
     return nearest;
   }
 }
 
+// --- BASE TOOL ---
 export abstract class SketchTool {
   protected canvas: HTMLCanvasElement | null = null;
   protected camera: THREE.Camera | null = null;
-  protected sketcher: Sketcher | null = null;
+  protected sketcher: Sketcher;
   protected plane: Plane | null = null;
   protected isActive: boolean = false;
   protected snapFinder: SnapPointFinder | null = null;
 
-  constructor(
-    canvas: HTMLCanvasElement | null,
-    camera: THREE.Camera | null,
-    sketcher: Sketcher | null,
-    plane: Plane | null
-  ) {
+  constructor(canvas: HTMLCanvasElement | null, camera: THREE.Camera | null, sketcher: Sketcher, plane: Plane | null) {
     this.canvas = canvas;
     this.camera = camera;
     this.sketcher = sketcher;
@@ -189,62 +121,31 @@ export abstract class SketchTool {
 
   protected screenToPlane(screenX: number, screenY: number): Point2D | null {
     if (!this.canvas || !this.camera || !this.plane) return null;
-
     const rect = this.canvas.getBoundingClientRect();
     const x = ((screenX - rect.left) / rect.width) * 2 - 1;
     const y = -((screenY - rect.top) / rect.height) * 2 + 1;
-
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(x, y), this.camera);
-
     const planeNormal = new THREE.Vector3(this.plane.normal.x, this.plane.normal.y, this.plane.normal.z).normalize();
     const planeOrigin = new THREE.Vector3(this.plane.origin.x, this.plane.origin.y, this.plane.origin.z);
     const threePlane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, planeOrigin);
-
     const intersect = new THREE.Vector3();
     const hit = raycaster.ray.intersectPlane(threePlane, intersect);
-
     if (!hit) return null;
-
     const xAxis = new THREE.Vector3(this.plane.xAxis.x, this.plane.xAxis.y, this.plane.xAxis.z).normalize();
     const yAxis = new THREE.Vector3(this.plane.yAxis.x, this.plane.yAxis.y, this.plane.yAxis.z).normalize();
-    
     const localVec = hit.clone().sub(planeOrigin);
-    
-    return {
-      x: localVec.dot(xAxis),
-      y: localVec.dot(yAxis)
-    };
+    return { x: localVec.dot(xAxis), y: localVec.dot(yAxis) };
   }
 
-  /**
-   * Apply snapping to a point
-   * Returns both the snapped point and snap info for visual feedback
-   */
   protected applySnapping(point: Point2D): { point: Point2D, snapInfo: SnapPoint | null } {
     if (!this.sketcher) return { point, snapInfo: null };
-    
-    if (!this.snapFinder) {
-      this.snapFinder = new SnapPointFinder(this.sketcher.getEntities());
-    } else {
-      // Update snap finder with current entities
-      this.snapFinder = new SnapPointFinder(this.sketcher.getEntities());
-    }
-    
+    this.snapFinder = new SnapPointFinder(this.sketcher);
     const snap = this.snapFinder.findNearestSnap(point);
-    return { 
-      point: snap ? snap.point : point, 
-      snapInfo: snap 
-    };
+    return { point: snap ? snap.point : point, snapInfo: snap };
   }
   
-  /**
-   * Get current snap info for visual feedback
-   */
-  getSnapInfo(): SnapPoint | null {
-    return null; // Override in subclasses
-  }
-
+  getSnapInfo(): SnapPoint | null { return null; }
   activate(): void { this.isActive = true; }
   deactivate(): void { this.isActive = false; this.reset(); }
   abstract reset(): void;
@@ -254,35 +155,20 @@ export abstract class SketchTool {
   abstract handleKeyDown(event: KeyboardEvent): void;
 }
 
-// --- POLYLINE TOOL WITH SNAPPING ---
-
+// --- POLYLINE TOOL ---
 export class PolylineTool extends SketchTool {
   private points: Point2D[] = [];
   private currentPoint: Point2D | null = null;
   private currentSnapInfo: SnapPoint | null = null;
-  private firstPointSnapInfo: SnapPoint | null = null; // Snap info dla pierwszego punktu
   
-  reset(): void { 
-    this.points = []; 
-    this.currentPoint = null; 
-    this.currentSnapInfo = null;
-    this.firstPointSnapInfo = null;
-  }
+  reset(): void { this.points = []; this.currentPoint = null; this.currentSnapInfo = null; }
   
   handleMouseMove(event: MouseEvent): void {
     if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if(p) {
         const { point: snapped, snapInfo } = this.applySnapping(p);
-        
-        // Jeśli nie mamy jeszcze żadnych punktów, pokaż snap dla pierwszego punktu
-        if (this.points.length === 0) {
-          this.firstPointSnapInfo = snapInfo;
-        } else {
-          this.currentSnapInfo = snapInfo;
-        }
-        
-        // Snap to start for closing
+        this.currentSnapInfo = snapInfo;
         if (this.points.length > 2 && vecDist(snapped, this.points[0]) < SNAP_DISTANCE) {
             this.currentPoint = { ...this.points[0] };
         } else {
@@ -292,77 +178,49 @@ export class PolylineTool extends SketchTool {
   }
 
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
-
     const { point: snapped } = this.applySnapping(p);
 
     if (this.points.length === 0) {
         this.points.push(snapped);
-        // Po kliknięciu pierwszego punktu, wyczyść firstPointSnapInfo
-        this.firstPointSnapInfo = null;
-    } 
-    else {
-        // Check if closing (click near start)
+    } else {
         const distToStart = vecDist(snapped, this.points[0]);
         if (this.points.length >= 3 && distToStart < SNAP_DISTANCE) {
-            this.finishPolyline(true); // CLOSE
+            this.sketcher.addPolyline(this.points, true);
+            this.reset();
             return;
         }
-        
         this.points.push(snapped);
     }
   }
 
-  handleRightClick(event: MouseEvent): void {
-    if (this.isActive && this.points.length >= 2) this.finishPolyline(false);
+  handleRightClick(event: MouseEvent): void { 
+    if (this.points.length >= 2) { 
+        this.sketcher.addPolyline(this.points, false); 
+        this.reset(); 
+    } else {
+        this.reset();
+    }
   }
-
-  handleKeyDown(event: KeyboardEvent): void {
-    if (event.key === 'Escape') this.reset();
-    if (event.key === 'Enter' && this.points.length >= 2) this.finishPolyline(false);
-    if ((event.key === 'c' || event.key === 'C') && this.points.length >= 3) this.finishPolyline(true);
-    if (event.key === 'Backspace' && this.points.length > 0) this.points.pop();
-  }
-
-  private finishPolyline(closed: boolean): void {
-    if (!this.sketcher) return;
-    try {
-      this.sketcher.addEntity(SketchEntityFactory.polyline(this.points, closed));
-      this.reset();
-    } catch (e) { console.error(e); }
-  }
-  
+  handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getPoints() { return this.points; }
   getCurrentPoint() { return this.currentPoint; }
-  getSnapInfo() { 
-    // Jeśli nie mamy jeszcze punktów, zwróć snap info dla pierwszego punktu
-    if (this.points.length === 0) {
-      return this.firstPointSnapInfo;
-    }
-    // W przeciwnym razie zwróć snap info dla aktualnego punktu
-    return this.currentSnapInfo; 
-  }
-  
-  canClose(): boolean {
-    if (this.points.length < 3) return false;
-    if (!this.currentPoint) return false;
-    return vecDist(this.currentPoint, this.points[0]) < SNAP_DISTANCE;
-  }
+  getSnapInfo() { return this.currentSnapInfo; }
+  canClose() { return this.points.length >= 3 && this.currentPoint && vecDist(this.currentPoint, this.points[0]) < SNAP_DISTANCE; }
 }
 
+// --- LINE TOOL (Single Segment) ---
 export class LineTool extends SketchTool {
   private startPoint: Point2D | null = null;
   private endPoint: Point2D | null = null;
   private currentSnapInfo: SnapPoint | null = null;
-  private startPointSnapInfo: SnapPoint | null = null; // Snap info dla punktu startowego
   
   reset(): void { 
     this.startPoint = null; 
     this.endPoint = null; 
     this.currentSnapInfo = null;
-    this.startPointSnapInfo = null;
   }
   
   handleMouseMove(event: MouseEvent): void {
@@ -371,31 +229,27 @@ export class LineTool extends SketchTool {
     if (!p) return;
     
     const { point: snapped, snapInfo } = this.applySnapping(p);
+    this.currentSnapInfo = snapInfo;
     
-    if (!this.startPoint) {
-      // Jeśli nie mamy jeszcze punktu startowego, pokaż snap dla niego
-      this.startPointSnapInfo = snapInfo;
-    } else {
-      // Jeśli już mamy punkt startowy, pokaż snap dla końcowego
+    if (this.startPoint) {
       this.endPoint = snapped;
-      this.currentSnapInfo = snapInfo;
     }
   }
   
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
     
     const { point: snapped } = this.applySnapping(p);
     
     if (!this.startPoint) {
+      // 1. Click: Set START
       this.startPoint = snapped;
-      // Po kliknięciu pierwszego punktu, wyczyść startPointSnapInfo
-      this.startPointSnapInfo = null;
     } else {
+      // 2. Click: Set END and CREATE
       this.endPoint = snapped;
-      this.sketcher.addEntity(SketchEntityFactory.line(this.startPoint, this.endPoint));
+      this.sketcher.addLine(this.startPoint, this.endPoint);
       this.reset();
     }
   }
@@ -404,407 +258,162 @@ export class LineTool extends SketchTool {
   handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
   getStartPoint() { return this.startPoint; }
   getEndPoint() { return this.endPoint; }
-  getSnapInfo() { 
-    // Jeśli nie mamy punktu startowego, zwróć snap info dla niego
-    if (!this.startPoint) {
-      return this.startPointSnapInfo;
-    }
-    // W przeciwnym razie zwróć snap info dla końcowego punktu
-    return this.currentSnapInfo; 
-  }
-}
-
-export class CircleTool extends SketchTool {
-  private center: Point2D | null = null;
-  private radius: number = 0;
-  private currentSnapInfo: SnapPoint | null = null;
-  
-  reset(): void { 
-    this.center = null; 
-    this.radius = 0; 
-    this.currentSnapInfo = null;
-  }
-  
-  handleMouseMove(event: MouseEvent): void {
-    if (this.isActive && this.center) {
-        const p = this.screenToPlane(event.clientX, event.clientY);
-        if(p) this.radius = vecDist(p, this.center);
-    }
-  }
-  
-  handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
-    const p = this.screenToPlane(event.clientX, event.clientY);
-    if (!p) return;
-    
-    if (!this.center) {
-      const { point: snapped, snapInfo } = this.applySnapping(p);
-      this.center = snapped;
-      this.currentSnapInfo = snapInfo;
-    } else {
-        if (this.radius > 0.1) this.sketcher.addEntity(SketchEntityFactory.circle(this.center, this.radius));
-        this.reset();
-    }
-  }
-  
-  handleRightClick(event: MouseEvent): void { this.reset(); }
-  handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
-  getCenter() { return this.center; }
-  getRadius() { return this.radius; }
   getSnapInfo() { return this.currentSnapInfo; }
 }
 
+// --- CIRCLE TOOL ---
+export class CircleTool extends SketchTool {
+  private center: Point2D | null = null;
+  private radius: number = 0;
+  
+  reset(): void { this.center = null; this.radius = 0; }
+  
+  handleMouseMove(event: MouseEvent): void {
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (this.isActive && this.center && p) this.radius = vecDist(p, this.center);
+  }
+  
+  handleClick(event: MouseEvent): void {
+    if (!this.isActive) return;
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (!p) return;
+    const { point: snapped } = this.applySnapping(p);
+    
+    if (!this.center) {
+      this.center = snapped;
+    } else {
+        if (this.radius > 0.1) this.sketcher.addCircle(this.center, this.radius);
+        this.reset();
+    }
+  }
+  handleRightClick(event: MouseEvent): void { this.reset(); }
+  handleKeyDown(e: KeyboardEvent): void { if (e.key === 'Escape') this.reset(); }
+  getCenter() { return this.center; }
+  getRadius() { return this.radius; }
+}
+
+// --- RECTANGLE TOOL ---
 export class RectangleTool extends SketchTool {
   private corner: Point2D | null = null;
-  private oppositeCorner: Point2D | null = null;
-  private currentSnapInfo: SnapPoint | null = null;
-  private cornerSnapInfo: SnapPoint | null = null; // Snap info dla pierwszego rogu
+  private opposite: Point2D | null = null;
   
-  reset(): void { 
-    this.corner = null; 
-    this.oppositeCorner = null; 
-    this.currentSnapInfo = null;
-    this.cornerSnapInfo = null;
-  }
+  reset(): void { this.corner = null; this.opposite = null; }
   
   handleMouseMove(event: MouseEvent): void {
     if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
-    if (!p) return;
-    
-    const { point: snapped, snapInfo } = this.applySnapping(p);
-    
-    if (!this.corner) {
-      // Jeśli nie mamy jeszcze pierwszego rogu, pokaż snap dla niego
-      this.cornerSnapInfo = snapInfo;
-    } else {
-      // Jeśli już mamy pierwszy róg, pokaż snap dla przeciwnego
-      this.oppositeCorner = snapped;
-      this.currentSnapInfo = snapInfo;
+    if(p) {
+        const { point: snapped } = this.applySnapping(p);
+        if (this.corner) this.opposite = snapped;
     }
   }
   
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
+    if (!this.isActive) return;
     const p = this.screenToPlane(event.clientX, event.clientY);
     if (!p) return;
-    
     const { point: snapped } = this.applySnapping(p);
     
     if (!this.corner) {
       this.corner = snapped;
-      // Po kliknięciu pierwszego rogu, wyczyść cornerSnapInfo
-      this.cornerSnapInfo = null;
     } else {
-        this.oppositeCorner = snapped;
-        const w = this.oppositeCorner.x - this.corner.x;
-        const h = this.oppositeCorner.y - this.corner.y;
-        if (Math.abs(w) > 0.1 && Math.abs(h) > 0.1) {
-          this.sketcher.addEntity(SketchEntityFactory.rectangle(this.corner, w, h));
-        }
+        this.opposite = snapped;
+        const w = this.opposite.x - this.corner.x;
+        const h = this.opposite.y - this.corner.y;
+        if (Math.abs(w) > 0.1 && Math.abs(h) > 0.1) this.sketcher.addRectangle(this.corner, w, h);
         this.reset();
     }
   }
-  
   handleRightClick(event: MouseEvent): void { this.reset(); }
-  handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
+  handleKeyDown(e: KeyboardEvent): void { if (e.key === 'Escape') this.reset(); }
   getCorner() { return this.corner; }
-  getOppositeCorner() { return this.oppositeCorner; }
-  getSnapInfo() { 
-    // Jeśli nie mamy pierwszego rogu, zwróć snap info dla niego
-    if (!this.corner) {
-      return this.cornerSnapInfo;
-    }
-    // W przeciwnym razie zwróć snap info dla przeciwnego rogu
-    return this.currentSnapInfo; 
-  }
+  getOppositeCorner() { return this.opposite; }
 }
 
-/**
- * ============================================================================
- * EDITING TOOLS
- * ============================================================================
- */
+// --- MODIFICATION TOOLS ---
 
-export class TrimTool extends SketchTool {
-  reset(): void {}
-  handleMouseMove(event: MouseEvent): void {}
+abstract class ModificationTool extends SketchTool {
   handleRightClick(event: MouseEvent): void { this.deactivate(); }
-  handleKeyDown(event: KeyboardEvent): void { if(event.key === 'Escape') this.deactivate(); }
-
-  handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
-    const clickPoint = this.screenToPlane(event.clientX, event.clientY);
-    if (!clickPoint) return;
+  handleKeyDown(e: KeyboardEvent): void { if(e.key === 'Escape') this.deactivate(); }
+  abstract handleClick(event: MouseEvent): void;
+  
+  // FIXED DETECTION WITH TOLERANCE
+  protected findEntityAtMouse(event: MouseEvent): { id: string, point: Point2D } | null {
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (!p) return null;
 
     const entities = this.sketcher.getEntities();
-    
-    let targetEntityId: string | null = null;
-    let targetSegment: { p1: Point2D, p2: Point2D } | null = null;
+    let closestId: string | null = null;
     let minDist = HIT_TOLERANCE;
 
     for (const entity of entities) {
-        const segments = getSegmentsFromEntity(entity);
-        for (const seg of segments) {
-            const proj = projectPointOnLine(clickPoint, seg.p1, seg.p2);
-            if (proj.dist < minDist && proj.tClamped >= 0 && proj.tClamped <= 1) {
-                minDist = proj.dist;
-                targetEntityId = entity.id;
-                targetSegment = seg;
-            }
-        }
-    }
-
-    if (!targetEntityId || !targetSegment) return;
-
-    const allSegments: { p1: Point2D, p2: Point2D }[] = [];
-    entities.forEach(ent => {
-        allSegments.push(...getSegmentsFromEntity(ent));
-    });
-
-    const resultSegments = calculateTrim(targetSegment, clickPoint, allSegments);
-
-    if (resultSegments) {
-        const oldEntity = this.sketcher.getEntity(targetEntityId);
-        const oldSegments = getSegmentsFromEntity(oldEntity);
-        
-        const segIdx = oldSegments.findIndex(s => 
-            Math.abs(s.p1.x - targetSegment!.p1.x) < 0.001 && 
-            Math.abs(s.p1.y - targetSegment!.p1.y) < 0.001 &&
-            Math.abs(s.p2.x - targetSegment!.p2.x) < 0.001 && 
-            Math.abs(s.p2.y - targetSegment!.p2.y) < 0.001
-        );
-
-        this.sketcher.removeEntity(targetEntityId);
-
-        oldSegments.forEach((seg, idx) => {
-            if (idx !== segIdx) {
-                this.sketcher!.addEntity(SketchEntityFactory.line(seg.p1, seg.p2));
-            }
-        });
-
-        resultSegments.forEach(seg => {
-            this.sketcher!.addEntity(SketchEntityFactory.line(seg.p1, seg.p2));
-        });
-        
-        console.log("Trim success");
-    }
-  }
-}
-
-export class ExtendTool extends SketchTool {
-  reset(): void {}
-  handleMouseMove(event: MouseEvent): void {}
-  handleRightClick(event: MouseEvent): void { this.deactivate(); }
-  handleKeyDown(event: KeyboardEvent): void { if(event.key === 'Escape') this.deactivate(); }
-
-  handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
-    const clickPoint = this.screenToPlane(event.clientX, event.clientY);
-    if (!clickPoint) return;
-
-    const entities = this.sketcher.getEntities();
-    
-    let targetEntityId: string | null = null;
-    let targetSegment: { p1: Point2D, p2: Point2D } | null = null;
-    let minDist = HIT_TOLERANCE;
-
-    for (const entity of entities) {
-        if (entity.type === 'line') {
-            const proj = projectPointOnLine(clickPoint, entity.start, entity.end);
+        const segments = getSegmentsFromEntity(entity, this.sketcher);
+        for(const seg of segments) {
+            const proj = projectPointOnLine(p, seg.p1, seg.p2);
             if (proj.dist < minDist) {
                 minDist = proj.dist;
-                targetEntityId = entity.id;
-                targetSegment = { p1: entity.start, p2: entity.end };
+                closestId = entity.id;
             }
         }
     }
+    return closestId ? { id: closestId, point: p } : null;
+  }
+}
 
-    if (!targetEntityId || !targetSegment) return;
+export class TrimTool extends ModificationTool {
+  reset(): void {}
+  handleMouseMove(event: MouseEvent): void {}
+  handleClick(event: MouseEvent): void {
+    const hit = this.findEntityAtMouse(event);
+    if (hit) this.sketcher.trimEntity(hit.id, hit.point);
+  }
+}
 
-    const barrierSegments: { p1: Point2D, p2: Point2D }[] = [];
-    entities.forEach(ent => {
-        if (ent.id !== targetEntityId) {
-            barrierSegments.push(...getSegmentsFromEntity(ent));
-        }
-    });
-
-    const newCoords = calculateExtend(targetSegment, clickPoint, barrierSegments);
-
-    if (newCoords) {
-        this.sketcher.updateEntity(targetEntityId, {
-            start: newCoords.p1,
-            end: newCoords.p2
-        });
-        console.log("Extend success");
-    }
+export class ExtendTool extends ModificationTool {
+  reset(): void {}
+  handleMouseMove(event: MouseEvent): void {}
+  handleClick(event: MouseEvent): void {
+    const hit = this.findEntityAtMouse(event);
+    if (hit) this.sketcher.extendEntity(hit.id, hit.point);
   }
 }
 
 export class OffsetTool extends SketchTool {
   private selectedId: string | null = null;
-  private sourceChain: Point2D[] = []; 
-  private isClosed: boolean = false;
-  private currentMousePos: Point2D | null = null; // Pozycja kursora dla podglądu
-
-  reset(): void {
-    this.selectedId = null;
-    this.sourceChain = [];
-    this.isClosed = false;
-    this.currentMousePos = null;
-  }
-
-  handleMouseMove(event: MouseEvent): void {
-    const p = this.screenToPlane(event.clientX, event.clientY);
-    if (p) {
-      this.currentMousePos = p;
-    }
-  }
-
-  handleKeyDown(event: KeyboardEvent): void { if (event.key === 'Escape') this.reset(); }
+  
+  reset(): void { this.selectedId = null; }
+  handleMouseMove(event: MouseEvent): void {}
   handleRightClick(event: MouseEvent): void { this.reset(); }
+  handleKeyDown(e: KeyboardEvent): void { if (e.key === 'Escape') this.reset(); }
 
   handleClick(event: MouseEvent): void {
-    if (!this.isActive || !this.sketcher) return;
-    const point = this.screenToPlane(event.clientX, event.clientY);
-    if (!point) return;
+    const p = this.screenToPlane(event.clientX, event.clientY);
+    if (!p) return;
 
     if (!this.selectedId) {
       let minDist = HIT_TOLERANCE;
       const entities = this.sketcher.getEntities();
-      
       for (const entity of entities) {
-        const segments = getSegmentsFromEntity(entity);
+        const segments = getSegmentsFromEntity(entity, this.sketcher);
         for(const seg of segments) {
-            const proj = projectPointOnLine(point, seg.p1, seg.p2);
+            const proj = projectPointOnLine(p, seg.p1, seg.p2);
             if (proj.dist < minDist) {
                 minDist = proj.dist;
                 this.selectedId = entity.id;
             }
         }
       }
-      
-      if (this.selectedId) {
-          const entity = this.sketcher.getEntity(this.selectedId);
-          if (!entity) {
-            this.reset();
-            return;
-          }
-          
-          if (entity.type === 'line') {
-              this.sourceChain = [entity.start, entity.end];
-              this.isClosed = false;
-          } else if (entity.type === 'polyline') {
-              this.sourceChain = [...entity.points];
-              this.isClosed = entity.closed;
-          } else if (entity.type === 'rectangle') {
-              const { x, y } = entity.corner;
-              const w = entity.width; 
-              const h = entity.height;
-              this.sourceChain = [
-                 {x, y}, {x: x+w, y}, {x: x+w, y: y+h}, {x, y: y+h}, {x, y}
-              ];
-              this.isClosed = true;
-          }
-          console.log("Offset: Selected. Now click to indicate side.");
-      }
+      if (this.selectedId) console.log("Offset: Selected. Click for side/dist.");
       return;
     }
 
-    const input = prompt("Podaj odległość offsetu:", "10");
-    if (input !== null) {
-        let distVal = parseFloat(input.replace(',', '.'));
-        if (!isNaN(distVal) && distVal !== 0) {
-            distVal = Math.abs(distVal);
-
-            const resPos = calculateOffsetChain(this.sourceChain, distVal);
-            const resNeg = calculateOffsetChain(this.sourceChain, -distVal);
-            
-            const midPos = { x: (resPos[0].x + resPos[1].x)/2, y: (resPos[0].y + resPos[1].y)/2 };
-            const midNeg = { x: (resNeg[0].x + resNeg[1].x)/2, y: (resNeg[0].y + resNeg[1].y)/2 };
-            
-            const dPos = vecDist(midPos, point);
-            const dNeg = vecDist(midNeg, point);
-            
-            const finalPoints = (dPos < dNeg) ? resPos : resNeg;
-
-            if (finalPoints.length > 0) {
-                this.sketcher.addEntity(SketchEntityFactory.polyline(finalPoints, this.isClosed));
-                console.log("Offset created.");
-            }
-        }
+    const input = prompt("Offset distance:", "5");
+    if (input) {
+        const dist = parseFloat(input);
+        if (!isNaN(dist)) this.sketcher.offsetEntity(this.selectedId, dist, p);
     }
-    
     this.reset();
   }
-
-  getPreviewArrow(): { start: Point2D, end: Point2D, side: 'left' | 'right' } | null {
-    if (!this.selectedId || this.sourceChain.length < 2 || !this.currentMousePos) {
-      return null;
-    }
-
-    // Znajdź najbliższy segment do kursora
-    let closestSegmentIdx = 0;
-    let minDist = Infinity;
-
-    for (let i = 0; i < this.sourceChain.length - 1; i++) {
-      const p1 = this.sourceChain[i];
-      const p2 = this.sourceChain[i + 1];
-      const proj = projectPointOnLine(this.currentMousePos, p1, p2);
-      
-      if (proj.dist < minDist) {
-        minDist = proj.dist;
-        closestSegmentIdx = i;
-      }
-    }
-
-    // Weź środkowy segment (dla lepszego podglądu)
-    const segIdx = Math.min(closestSegmentIdx, this.sourceChain.length - 2);
-    const p1 = this.sourceChain[segIdx];
-    const p2 = this.sourceChain[segIdx + 1];
-
-    // Oblicz środek segmentu
-    const mid = {
-      x: (p1.x + p2.x) / 2,
-      y: (p1.y + p2.y) / 2
-    };
-
-    // Oblicz wektor normalny do segmentu
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    
-    if (len < 0.001) return null;
-
-    // Normalny wektor (obrócony o 90°)
-    const nx = -dy / len;
-    const ny = dx / len;
-
-    // Sprawdź, po której stronie jest kursor
-    const toMouse = {
-      x: this.currentMousePos.x - mid.x,
-      y: this.currentMousePos.y - mid.y
-    };
-
-    // Iloczyn skalarny określa stronę
-    const dot = toMouse.x * nx + toMouse.y * ny;
-    const side: 'left' | 'right' = dot > 0 ? 'right' : 'left';
-
-    // Długość strzałki (stała wizualna)
-    const arrowLength = 15;
-
-    // Kierunek strzałki zależy od strony
-    const direction = dot > 0 ? 1 : -1;
-
-    const end = {
-      x: mid.x + nx * arrowLength * direction,
-      y: mid.y + ny * arrowLength * direction
-    };
-
-    return {
-      start: mid,
-      end: end,
-      side: side
-    };
-  }
+  
+  getPreviewArrow() { return null; }
 }

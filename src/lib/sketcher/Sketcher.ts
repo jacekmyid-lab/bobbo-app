@@ -1,156 +1,42 @@
 /**
  * ============================================================================
- * 2D SKETCHER MODULE
+ * 2D SKETCHER MODULE (NODE-BASED TOPOLOGY)
  * ============================================================================
- * 
- * This module handles 2D sketch creation and editing. Sketches are the
- * foundation for many CAD operations like extrude and revolve.
- * 
- * Features:
- * - Line, polyline, rectangle, circle, arc, spline creation
- * - Automatic profile detection (closed contours)
- * - Basic constraints and dimensioning
- * - Integration with Manifold for extrusion/revolution
- * 
- * @module sketcher/Sketcher
+ * * This module handles 2D sketch creation and editing using a topological
+ * approach where geometry is defined by Nodes (points) and Entities (connections).
+ * * Features:
+ * - Automatic "magnetic" snapping (Node acquisition)
+ * - Line, polyline, rectangle, circle creation
+ * - Automatic profile detection (closed contours) for fill rendering
+ * - Constraints solver integration (Vertical/Horizontal)
+ * - Geometric operations (Trim, Extend, Offset) adapted for topology
+ * * @module sketcher/Sketcher
  */
 
 import type {
   CADSketch,
   SketchEntity,
+  SketchNode,
   SketchLine,
   SketchPolyline,
   SketchRectangle,
   SketchCircle,
-  SketchArc,
-  SketchSpline,
   SketchPoint,
   Constraint,
   Point2D,
   Plane,
+  VerticalConstraint,
+  HorizontalConstraint,
   Result
 } from '../core/types';
 import { generateId } from '../stores/cadStore';
 import { SketchMath } from '../geometry/SketchMath';
+import { solveConstraints } from './ConstraintSolver';
 
 /**
- * Tolerance for point coincidence detection
+ * Tolerance for point snapping (Node acquisition)
  */
-const COINCIDENCE_TOLERANCE = 0.001;
-
-/**
- * ============================================================================
- * SKETCH ENTITY FACTORY
- * ============================================================================
- * Factory functions for creating sketch entities
- */
-export const SketchEntityFactory = {
-  /**
-   * Create a line entity
-   */
-  line(start: Point2D, end: Point2D, construction = false): SketchLine {
-    return {
-      id: generateId(),
-      type: 'line',
-      start,
-      end,
-      construction,
-      connections: []
-    };
-  },
-
-  /**
-   * Create a polyline entity
-   */
-  polyline(points: Point2D[], closed = false, construction = false): SketchPolyline {
-    return {
-      id: generateId(),
-      type: 'polyline',
-      points,
-      closed,
-      construction,
-      connections: []
-    };
-  },
-
-  /**
-   * Create a rectangle entity
-   */
-  rectangle(corner: Point2D, width: number, height: number, construction = false): SketchRectangle {
-    return {
-      id: generateId(),
-      type: 'rectangle',
-      corner,
-      width,
-      height,
-      construction,
-      connections: []
-    };
-  },
-
-  /**
-   * Create a circle entity
-   */
-  circle(center: Point2D, radius: number, construction = false): SketchCircle {
-    return {
-      id: generateId(),
-      type: 'circle',
-      center,
-      radius,
-      construction,
-      connections: []
-    };
-  },
-
-  /**
-   * Create an arc entity
-   */
-  arc(
-    center: Point2D,
-    radius: number,
-    startAngle: number,
-    endAngle: number,
-    construction = false
-  ): SketchArc {
-    return {
-      id: generateId(),
-      type: 'arc',
-      center,
-      radius,
-      startAngle,
-      endAngle,
-      construction,
-      connections: []
-    };
-  },
-
-  /**
-   * Create a spline entity
-   */
-  spline(controlPoints: Point2D[], degree = 3, construction = false): SketchSpline {
-    return {
-      id: generateId(),
-      type: 'spline',
-      controlPoints,
-      degree,
-      construction,
-      connections: []
-    };
-  },
-
-  /**
-   * Create a point entity
-   */
-  point(position: Point2D): SketchPoint {
-    return {
-      id: generateId(),
-      type: 'point',
-      position,
-      construction: false,
-      connections: []
-    };
-  }
-};
+const SNAP_DISTANCE = 0.5;
 
 /**
  * ============================================================================
@@ -159,686 +45,611 @@ export const SketchEntityFactory = {
  * Main class for managing sketch geometry
  */
 export class Sketcher {
+  private id: string;
+  private plane: Plane;
+  
+  // Data Storage
+  private nodes: Map<string, SketchNode> = new Map();
   private entities: Map<string, SketchEntity> = new Map();
   private constraints: Map<string, Constraint> = new Map();
-  private plane: Plane;
-  private sketchId: string;
 
   constructor(sketchId: string, plane: Plane) {
-    this.sketchId = sketchId;
+    this.id = sketchId;
     this.plane = plane;
   }
 
-  /**
-   * Get all entities
-   */
+  // ==========================================================================
+  // NODE MANAGEMENT (TOPOLOGY)
+  // ==========================================================================
+
+  private acquireNode(x: number, y: number): string {
+    for (const node of this.nodes.values()) {
+      const dx = Math.abs(node.x - x);
+      const dy = Math.abs(node.y - y);
+      if (dx < SNAP_DISTANCE && dy < SNAP_DISTANCE) {
+        return node.id; 
+      }
+    }
+
+    const newNode: SketchNode = {
+      id: generateId(),
+      x,
+      y
+    };
+    this.nodes.set(newNode.id, newNode);
+    return newNode.id;
+  }
+
+  getNode(id: string): SketchNode | undefined {
+    return this.nodes.get(id);
+  }
+
+  private getPoint(nodeId: string): Point2D | null {
+    const n = this.nodes.get(nodeId);
+    return n ? { x: n.x, y: n.y } : null;
+  }
+
+  // ==========================================================================
+  // ENTITY CREATION
+  // ==========================================================================
+
+  addLine(start: Point2D, end: Point2D): SketchLine {
+    const startId = this.acquireNode(start.x, start.y);
+    const endId = this.acquireNode(end.x, end.y);
+
+    const line: SketchLine = {
+      type: 'line',
+      id: generateId(),
+      startNodeId: startId,
+      endNodeId: endId,
+      construction: false,
+      connections: []
+    };
+
+    this.entities.set(line.id, line);
+    return line;
+  }
+
+  addPolyline(points: Point2D[], closed: boolean): SketchPolyline {
+    const nodeIds = points.map(p => this.acquireNode(p.x, p.y));
+
+    const poly: SketchPolyline = {
+      type: 'polyline',
+      id: generateId(),
+      nodeIds,
+      closed,
+      construction: false,
+      connections: []
+    };
+
+    this.entities.set(poly.id, poly);
+    return poly;
+  }
+
+  addRectangle(corner: Point2D, width: number, height: number): SketchRectangle {
+    const cornerId = this.acquireNode(corner.x, corner.y);
+
+    const rect: SketchRectangle = {
+      type: 'rectangle',
+      id: generateId(),
+      cornerNodeId: cornerId,
+      width,
+      height,
+      construction: false,
+      connections: []
+    };
+
+    this.entities.set(rect.id, rect);
+    return rect;
+  }
+
+  addCircle(center: Point2D, radius: number): SketchCircle {
+    const centerId = this.acquireNode(center.x, center.y);
+
+    const circle: SketchCircle = {
+      type: 'circle',
+      id: generateId(),
+      centerNodeId: centerId,
+      radius,
+      construction: false,
+      connections: []
+    };
+
+    this.entities.set(circle.id, circle);
+    return circle;
+  }
+
+  addPoint(pos: Point2D): SketchPoint {
+    const nodeId = this.acquireNode(pos.x, pos.y);
+    
+    const point: SketchPoint = {
+      type: 'point',
+      id: generateId(),
+      nodeId: nodeId,
+      construction: false,
+      connections: []
+    };
+    
+    this.entities.set(point.id, point);
+    return point;
+  }
+
+  // ==========================================================================
+  // DATA ACCESS
+  // ==========================================================================
+
   getEntities(): SketchEntity[] {
     return Array.from(this.entities.values());
   }
-
-  /**
-   * Get entity by ID
-   */
-  getEntity(id: string): SketchEntity | undefined {
-    return this.entities.get(id);
+  
+  getNodes(): Map<string, SketchNode> {
+    return this.nodes;
   }
 
-  /**
-   * Add an entity to the sketch
-   */
-  addEntity(entity: SketchEntity): void {
-    this.entities.set(entity.id, entity);
-    this.updateConnections();
+  getAllConstraints(): Constraint[] {
+    return Array.from(this.constraints.values());
   }
 
-  /**
-   * Remove an entity from the sketch
-   */
+  getConstraints(): Constraint[] {
+    return this.getAllConstraints();
+  }
+
+  clear(): void {
+    this.entities.clear();
+    this.nodes.clear();
+    this.constraints.clear();
+  }
+
   removeEntity(entityId: string): void {
+    const entity = this.entities.get(entityId);
+    if (!entity) return;
+
     this.entities.delete(entityId);
-    // Remove related constraints
+    
     for (const [id, constraint] of this.constraints) {
       if (constraint.entityIds.includes(entityId)) {
         this.constraints.delete(id);
       }
     }
-    this.updateConnections();
+    
+    this.cleanupUnusedNodes();
   }
 
-  /**
-   * Update an entity
-   */
+  private cleanupUnusedNodes() {
+    const usedNodeIds = new Set<string>();
+    
+    for (const ent of this.entities.values()) {
+      if (ent.type === 'line') {
+        usedNodeIds.add(ent.startNodeId);
+        usedNodeIds.add(ent.endNodeId);
+      } else if (ent.type === 'polyline') {
+        ent.nodeIds.forEach(id => usedNodeIds.add(id));
+      } else if (ent.type === 'rectangle') {
+        usedNodeIds.add(ent.cornerNodeId);
+      } else if (ent.type === 'circle') {
+        usedNodeIds.add(ent.centerNodeId);
+      } else if (ent.type === 'point') {
+        usedNodeIds.add(ent.nodeId);
+      }
+    }
+
+    for (const nodeId of this.nodes.keys()) {
+      if (!usedNodeIds.has(nodeId)) {
+        this.nodes.delete(nodeId);
+      }
+    }
+  }
+
   updateEntity(entityId: string, updates: Partial<SketchEntity>): void {
     const entity = this.entities.get(entityId);
     if (entity) {
-      this.entities.set(entityId, { ...entity, ...updates } as SketchEntity);
-      this.updateConnections();
-    }
-  }
-
-  /**
-   * Add a constraint
-   */
-  addConstraint(constraint: Constraint): void {
-    this.constraints.set(constraint.id, constraint);
-  }
-
-  /**
-   * Remove a constraint
-   */
-  removeConstraint(constraintId: string): void {
-    this.constraints.delete(constraintId);
-  }
-
-  /**
-   * Get all constraints
-   */
-  getConstraints(): Constraint[] {
-    return Array.from(this.constraints.values());
-  }
-
-  /**
-   * Update connections between entities (for profile detection)
-   */
-  private updateConnections(): void {
-    // Reset all connections
-    for (const entity of this.entities.values()) {
-      entity.connections = [];
-    }
-
-    // Find coincident endpoints
-    const endpoints = this.extractEndpoints();
-    
-    for (let i = 0; i < endpoints.length; i++) {
-      for (let j = i + 1; j < endpoints.length; j++) {
-        if (this.pointsCoincident(endpoints[i].point, endpoints[j].point)) {
-          // Add bidirectional connection
-          const entityI = this.entities.get(endpoints[i].entityId);
-          const entityJ = this.entities.get(endpoints[j].entityId);
-          
-          if (entityI && entityJ) {
-            if (!entityI.connections.includes(endpoints[j].entityId)) {
-              entityI.connections.push(endpoints[j].entityId);
-            }
-            if (!entityJ.connections.includes(endpoints[i].entityId)) {
-              entityJ.connections.push(endpoints[i].entityId);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Extract all endpoints from entities
-   */
-  private extractEndpoints(): Array<{ entityId: string; point: Point2D; which: string }> {
-    const endpoints: Array<{ entityId: string; point: Point2D; which: string }> = [];
-
-    for (const entity of this.entities.values()) {
-      if (entity.construction) continue; // Skip construction geometry
-
-      switch (entity.type) {
-        case 'line':
-          endpoints.push({ entityId: entity.id, point: entity.start, which: 'start' });
-          endpoints.push({ entityId: entity.id, point: entity.end, which: 'end' });
-          break;
-        case 'polyline':
-          if (entity.points.length > 0) {
-            endpoints.push({ entityId: entity.id, point: entity.points[0], which: 'start' });
-            if (!entity.closed && entity.points.length > 1) {
-              endpoints.push({ 
-                entityId: entity.id, 
-                point: entity.points[entity.points.length - 1], 
-                which: 'end' 
-              });
-            }
-          }
-          break;
-        case 'arc':
-          endpoints.push({ 
-            entityId: entity.id, 
-            point: this.arcEndpoint(entity, 'start'), 
-            which: 'start' 
-          });
-          endpoints.push({ 
-            entityId: entity.id, 
-            point: this.arcEndpoint(entity, 'end'), 
-            which: 'end' 
-          });
-          break;
-        case 'spline':
-          if (entity.controlPoints.length > 0) {
-            endpoints.push({ 
-              entityId: entity.id, 
-              point: entity.controlPoints[0], 
-              which: 'start' 
-            });
-            endpoints.push({ 
-              entityId: entity.id, 
-              point: entity.controlPoints[entity.controlPoints.length - 1], 
-              which: 'end' 
-            });
-          }
-          break;
-        // Circles and rectangles don't have open endpoints
-      }
-    }
-
-    return endpoints;
-  }
-
-  /**
-   * Get arc endpoint
-   */
-  private arcEndpoint(arc: SketchArc, which: 'start' | 'end'): Point2D {
-    const angle = which === 'start' ? arc.startAngle : arc.endAngle;
-    const radians = (angle * Math.PI) / 180;
-    return {
-      x: arc.center.x + arc.radius * Math.cos(radians),
-      y: arc.center.y + arc.radius * Math.sin(radians)
-    };
-  }
-
-  /**
-   * Check if two points are coincident
-   */
-  private pointsCoincident(p1: Point2D, p2: Point2D): boolean {
-    const dx = p1.x - p2.x;
-    const dy = p1.y - p2.y;
-    return Math.sqrt(dx * dx + dy * dy) < COINCIDENCE_TOLERANCE;
-  }
-
-  /**
-   * Detect closed profiles in the sketch
-   * Returns arrays of Point2D representing closed polygons
-   */
-  detectProfiles(): Point2D[][] {
-    const profiles: Point2D[][] = [];
-    const visitedEntities = new Set<string>();
-
-    // First, add standalone closed shapes
-    for (const entity of this.entities.values()) {
-      if (entity.construction) continue;
-
-      if (entity.type === 'circle') {
-        // Circle is always a closed profile
-        profiles.push(this.circleToPolygon(entity));
-        visitedEntities.add(entity.id);
-      } else if (entity.type === 'rectangle') {
-        // Rectangle is always a closed profile
-        profiles.push(this.rectangleToPolygon(entity));
-        visitedEntities.add(entity.id);
-      } else if (entity.type === 'polyline' && entity.closed) {
-        profiles.push([...entity.points]);
-        visitedEntities.add(entity.id);
-      }
-    }
-
-    // Then, try to find closed chains of entities
-    for (const entity of this.entities.values()) {
-      if (visitedEntities.has(entity.id) || entity.construction) continue;
-
-      const chain = this.findClosedChain(entity.id, visitedEntities);
-      if (chain) {
-        const polygon = this.chainToPolygon(chain);
-        if (polygon.length >= 3) {
-          profiles.push(polygon);
-        }
-      }
-    }
-
-    return profiles;
-  }
-
-  /**
-   * Find a closed chain starting from an entity
-   */
-  private findClosedChain(
-    startId: string,
-    globalVisited: Set<string>
-  ): string[] | null {
-    const chain: string[] = [];
-    const visited = new Set<string>();
-    
-    const dfs = (currentId: string, prevId: string | null): boolean => {
-      if (visited.has(currentId)) {
-        // Found a cycle back to start
-        return currentId === startId && chain.length >= 2;
-      }
-
-      visited.add(currentId);
-      chain.push(currentId);
-
-      const entity = this.entities.get(currentId);
-      if (!entity) return false;
-
-      for (const connectedId of entity.connections) {
-        if (connectedId === prevId) continue; // Don't go back
-        
-        if (connectedId === startId && chain.length >= 2) {
-          // Closed the loop
-          return true;
-        }
-
-        if (!visited.has(connectedId)) {
-          if (dfs(connectedId, currentId)) {
-            return true;
-          }
-        }
-      }
-
-      chain.pop();
-      visited.delete(currentId);
-      return false;
-    };
-
-    if (dfs(startId, null)) {
-      // Mark all entities in chain as visited globally
-      chain.forEach(id => globalVisited.add(id));
-      return chain;
-    }
-
-    return null;
-  }
-
-  /**
-   * Convert a chain of entity IDs to a polygon
-   */
-  private chainToPolygon(chain: string[]): Point2D[] {
-    const points: Point2D[] = [];
-
-    for (let i = 0; i < chain.length; i++) {
-      const entity = this.entities.get(chain[i]);
-      if (!entity) continue;
-
-      const entityPoints = this.entityToPoints(entity);
+      const updated = { ...entity, ...updates } as SketchEntity;
+      this.entities.set(entityId, updated);
       
-      // Determine if we need to reverse the points
-      if (i > 0 && points.length > 0) {
-        const lastPoint = points[points.length - 1];
-        const firstEntityPoint = entityPoints[0];
-        const lastEntityPoint = entityPoints[entityPoints.length - 1];
-
-        const distToFirst = this.distance(lastPoint, firstEntityPoint);
-        const distToLast = this.distance(lastPoint, lastEntityPoint);
-
-        if (distToLast < distToFirst) {
-          entityPoints.reverse();
+      const legacyUpdates = updates as any;
+      if (entity.type === 'line') {
+        if (legacyUpdates.start) {
+          const n = this.nodes.get(entity.startNodeId);
+          if (n) { n.x = legacyUpdates.start.x; n.y = legacyUpdates.start.y; }
+        }
+        if (legacyUpdates.end) {
+          const n = this.nodes.get(entity.endNodeId);
+          if (n) { n.x = legacyUpdates.end.x; n.y = legacyUpdates.end.y; }
         }
       }
-
-      // Add points, skipping duplicate at junction
-      for (let j = 0; j < entityPoints.length; j++) {
-        if (j === 0 && points.length > 0) {
-          const lastPoint = points[points.length - 1];
-          if (this.pointsCoincident(lastPoint, entityPoints[j])) {
-            continue;
-          }
-        }
-        points.push(entityPoints[j]);
-      }
-    }
-
-    // Close the polygon if needed
-    if (points.length >= 3) {
-      const first = points[0];
-      const last = points[points.length - 1];
-      if (this.pointsCoincident(first, last)) {
-        points.pop();
-      }
-    }
-
-    return points;
-  }
-
-  /**
-   * Convert entity to array of points
-   */
-  private entityToPoints(entity: SketchEntity): Point2D[] {
-    switch (entity.type) {
-      case 'line':
-        return [entity.start, entity.end];
-      case 'polyline':
-        return [...entity.points];
-      case 'arc':
-        return this.arcToPoints(entity);
-      case 'spline':
-        return this.splineToPoints(entity);
-      default:
-        return [];
     }
   }
 
-  /**
-   * Convert circle to polygon
-   */
-  private circleToPolygon(circle: SketchCircle, segments = 32): Point2D[] {
-    const points: Point2D[] = [];
-    for (let i = 0; i < segments; i++) {
-      const angle = (i / segments) * Math.PI * 2;
-      points.push({
-        x: circle.center.x + circle.radius * Math.cos(angle),
-        y: circle.center.y + circle.radius * Math.sin(angle)
-      });
-    }
-    return points;
-  }
-
-  /**
-   * Convert rectangle to polygon
-   */
-  private rectangleToPolygon(rect: SketchRectangle): Point2D[] {
-    return [
-      { x: rect.corner.x, y: rect.corner.y },
-      { x: rect.corner.x + rect.width, y: rect.corner.y },
-      { x: rect.corner.x + rect.width, y: rect.corner.y + rect.height },
-      { x: rect.corner.x, y: rect.corner.y + rect.height }
-    ];
-  }
-
-  /**
-   * Convert arc to points
-   */
-  private arcToPoints(arc: SketchArc, segments = 16): Point2D[] {
-    const points: Point2D[] = [];
-    let startAngle = arc.startAngle;
-    let endAngle = arc.endAngle;
+  // ==========================================================================
+  // HELPERY GEOMETRYCZNE (ROZBIJANIE NA SEGMENTY)
+  // ==========================================================================
+  
+  // Pobiera WSZYSTKIE segmenty (linii, polilinii, prostokątów) do wykrywania kolizji
+  private getAllSegments(): { p1: Point2D, p2: Point2D }[] {
+    const segments: { p1: Point2D, p2: Point2D }[] = [];
     
-    // Handle angle wrapping
-    while (endAngle < startAngle) {
-      endAngle += 360;
+    for (const ent of this.entities.values()) {
+      if (ent.type === 'line') {
+        const p1 = this.getPoint(ent.startNodeId);
+        const p2 = this.getPoint(ent.endNodeId);
+        if (p1 && p2) segments.push({ p1, p2 });
+      } 
+      else if (ent.type === 'polyline') {
+        for (let i = 0; i < ent.nodeIds.length - 1; i++) {
+          const p1 = this.getPoint(ent.nodeIds[i]);
+          const p2 = this.getPoint(ent.nodeIds[i+1]);
+          if (p1 && p2) segments.push({ p1, p2 });
+        }
+        if (ent.closed) {
+           const p1 = this.getPoint(ent.nodeIds[ent.nodeIds.length - 1]);
+           const p2 = this.getPoint(ent.nodeIds[0]);
+           if (p1 && p2) segments.push({ p1, p2 });
+        }
+      }
+      else if (ent.type === 'rectangle') {
+        const p1 = this.getPoint(ent.cornerNodeId);
+        if (p1) {
+          const p2 = { x: p1.x + ent.width, y: p1.y };
+          const p3 = { x: p1.x + ent.width, y: p1.y + ent.height };
+          const p4 = { x: p1.x, y: p1.y + ent.height };
+          segments.push({ p1, p2 }, { p1: p2, p2: p3 }, { p1: p3, p2: p4 }, { p1: p4, p2: p1 });
+        }
+      }
     }
-
-    const angleSpan = endAngle - startAngle;
-    const numSegments = Math.max(3, Math.ceil(segments * (angleSpan / 360)));
-
-    for (let i = 0; i <= numSegments; i++) {
-      const t = i / numSegments;
-      const angle = ((startAngle + t * angleSpan) * Math.PI) / 180;
-      points.push({
-        x: arc.center.x + arc.radius * Math.cos(angle),
-        y: arc.center.y + arc.radius * Math.sin(angle)
-      });
-    }
-
-    return points;
+    return segments;
   }
 
-  /**
-   * Convert spline to points (simplified - linear interpolation)
-   */
-  private splineToPoints(spline: SketchSpline, segments = 20): Point2D[] {
-    if (spline.controlPoints.length < 2) {
-      return [...spline.controlPoints];
+  // Pobiera wszystkie okręgi (do użycia jako granice cięcia/wydłużania)
+  private getAllCircles(): { center: Point2D, radius: number }[] {
+    const circles: { center: Point2D, radius: number }[] = [];
+    for (const ent of this.entities.values()) {
+      if (ent.type === 'circle') {
+        const c = this.getPoint(ent.centerNodeId);
+        if (c) circles.push({ center: c, radius: ent.radius });
+      }
     }
+    return circles;
+  }
 
-    // Simple Catmull-Rom spline interpolation
-    const points: Point2D[] = [];
-    const n = spline.controlPoints.length;
+  // ==========================================================================
+  // CONSTRAINT MANAGEMENT
+  // ==========================================================================
 
-    for (let i = 0; i < n - 1; i++) {
-      const p0 = spline.controlPoints[Math.max(0, i - 1)];
-      const p1 = spline.controlPoints[i];
-      const p2 = spline.controlPoints[Math.min(n - 1, i + 1)];
-      const p3 = spline.controlPoints[Math.min(n - 1, i + 2)];
+  addVerticalConstraint(entityId: string): Result<string> {
+    const entity = this.entities.get(entityId);
+    if (!entity || entity.type !== 'line') return { success: false, error: 'Target not a line' };
 
-      const segmentCount = Math.ceil(segments / (n - 1));
-      for (let j = 0; j < segmentCount; j++) {
-        const t = j / segmentCount;
-        points.push(this.catmullRom(p0, p1, p2, p3, t));
+    for (const c of this.constraints.values()) {
+      if (c.type === 'vertical' && c.entityIds.includes(entityId)) {
+        return { success: false, error: 'Already vertical' };
       }
     }
 
-    // Add final point
-    points.push(spline.controlPoints[n - 1]);
-
-    return points;
-  }
-
-  /**
-   * Catmull-Rom spline interpolation
-   */
-  private catmullRom(p0: Point2D, p1: Point2D, p2: Point2D, p3: Point2D, t: number): Point2D {
-    const t2 = t * t;
-    const t3 = t2 * t;
-
-    const x = 0.5 * (
-      2 * p1.x +
-      (-p0.x + p2.x) * t +
-      (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-      (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
-    );
-
-    const y = 0.5 * (
-      2 * p1.y +
-      (-p0.y + p2.y) * t +
-      (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-      (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
-    );
-
-    return { x, y };
-  }
-
-  /**
-   * Calculate distance between two points
-   */
-  private distance(p1: Point2D, p2: Point2D): number {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    return Math.sqrt(dx * dx + dy * dy);
-  }
-
-  /**
-   * Export sketch to CADSketch node format
-   */
-  exportToNode(planeId: string): Omit<CADSketch, 'id' | 'name' | 'visible' | 'locked' | 'parentId' | 'childIds' | 'transform' | 'createdAt' | 'modifiedAt' | 'metadata'> {
-    const profiles = this.detectProfiles();
-    const isFullyConstrained = this.checkFullyConstrained();
-
-    return {
-      type: 'sketch',
-      planeId,
-      entities: this.getEntities(),
-      constraints: this.getConstraints(),
-      fullyConstrained: isFullyConstrained,
-      profiles
+    const constraint: VerticalConstraint = {
+      id: generateId(),
+      type: 'vertical',
+      entityIds: [entityId],
+      enabled: true
     };
+
+    this.constraints.set(constraint.id, constraint);
+    this.solveAllConstraints();
+    return { success: true, value: constraint.id };
   }
 
-  /**
-   * Check if sketch is fully constrained
-   * (Simplified version - full constraint solving is complex)
-   */
-  private checkFullyConstrained(): boolean {
-    // For now, just return false - real constraint solving is complex
-    return false;
+  addHorizontalConstraint(entityId: string): Result<string> {
+    const entity = this.entities.get(entityId);
+    if (!entity || entity.type !== 'line') return { success: false, error: 'Target not a line' };
+
+    for (const c of this.constraints.values()) {
+      if (c.type === 'horizontal' && c.entityIds.includes(entityId)) {
+        return { success: false, error: 'Already horizontal' };
+      }
+    }
+
+    const constraint: HorizontalConstraint = {
+      id: generateId(),
+      type: 'horizontal',
+      entityIds: [entityId],
+      enabled: true
+    };
+
+    this.constraints.set(constraint.id, constraint);
+    this.solveAllConstraints();
+    return { success: true, value: constraint.id };
   }
 
-// --- POCZĄTEK NOWYCH METOD
+  solveAllConstraints(): void {
+    if (this.constraints.size === 0) return;
+    const result = solveConstraints(this.nodes, this.entities, this.constraints);
+    if (!result.success) {
+      console.warn(`[Sketcher] Solve failed`);
+    }
+  }
 
-  /**
-   * TRIM: Utnij linię w miejscu kliknięcia do najbliższych przecięć z innymi obiektami.
-   */
-  /**
-   * TRIM: Ulepszona wersja z tolerancją na błędy numeryczne.
-   */
+  // ==========================================================================
+  // PROFILE DETECTION (For Blue Fill)
+  // ==========================================================================
+
+  getClosedContours(): Point2D[][] {
+    const adj = new Map<string, string[]>();
+
+    const addEdge = (id1: string, id2: string) => {
+      if (!adj.has(id1)) adj.set(id1, []);
+      if (!adj.has(id2)) adj.set(id2, []);
+      // Unikaj duplikatów krawędzi
+      if (!adj.get(id1)!.includes(id2)) adj.get(id1)!.push(id2);
+      if (!adj.get(id2)!.includes(id1)) adj.get(id2)!.push(id1);
+    };
+
+    // Buduj graf ze wszystkich Linii i Polilinii
+    for (const ent of this.entities.values()) {
+      if (ent.type === 'line') {
+        addEdge(ent.startNodeId, ent.endNodeId);
+      } else if (ent.type === 'polyline') {
+        for (let i = 0; i < ent.nodeIds.length - 1; i++) {
+          addEdge(ent.nodeIds[i], ent.nodeIds[i+1]);
+        }
+        if (ent.closed) {
+          addEdge(ent.nodeIds[ent.nodeIds.length-1], ent.nodeIds[0]);
+        }
+      }
+    }
+
+    const cycles: Point2D[][] = [];
+
+    // Dodaj prostokąty (one zawsze są profilami)
+    for (const ent of this.entities.values()) {
+        if (ent.type === 'rectangle') {
+            const p = this.getPoint(ent.cornerNodeId);
+            if (p) {
+                cycles.push([
+                    {x: p.x, y: p.y},
+                    {x: p.x + ent.width, y: p.y},
+                    {x: p.x + ent.width, y: p.y + ent.height},
+                    {x: p.x, y: p.y + ent.height}
+                ]);
+            }
+        }
+    }
+
+    // Szukaj cykli
+    const nodeKeys = Array.from(adj.keys());
+    const visitedPaths = new Set<string>();
+
+    for (const startNodeId of nodeKeys) {
+        if ((adj.get(startNodeId)?.length || 0) < 2) continue;
+
+        const stack: { curr: string, path: string[], visited: Set<string> }[] = [];
+        stack.push({ curr: startNodeId, path: [startNodeId], visited: new Set([startNodeId]) });
+
+        let limit = 0;
+        while(stack.length > 0 && limit++ < 5000) {
+            const { curr, path, visited } = stack.pop()!;
+            const neighbors = adj.get(curr) || [];
+
+            for (const neighbor of neighbors) {
+                // Nie wracaj po tej samej krawędzi od razu
+                if (path.length >= 2 && path[path.length - 2] === neighbor) continue;
+
+                if (neighbor === startNodeId && path.length >= 3) {
+                    // Mamy cykl!
+                    // Sortujemy path żeby stworzyć unikalny podpis
+                    const sortedPath = [...path].sort().join('-');
+                    if (!visitedPaths.has(sortedPath)) {
+                        visitedPaths.add(sortedPath);
+                        
+                        const contour = path.map(id => {
+                            const n = this.nodes.get(id);
+                            return { x: n!.x, y: n!.y };
+                        });
+                        cycles.push(contour);
+                    }
+                    continue; // Znaleziono zamknięcie, nie idź dalej tą ścieżką
+                }
+
+                if (!visited.has(neighbor)) {
+                    const newVisited = new Set(visited);
+                    newVisited.add(neighbor);
+                    stack.push({ curr: neighbor, path: [...path, neighbor], visited: newVisited });
+                }
+            }
+        }
+    }
+
+    return cycles;
+  }
+
+  // ==========================================================================
+  // GEOMETRIC OPERATIONS (TRIM/EXTEND/OFFSET)
+  // ==========================================================================
+
   trimEntity(targetId: string, clickPoint: Point2D): void {
+    const target = this.entities.get(targetId);
+    if (!target) return;
+
+    // --- CASE 1: LINIA ---
+    if (target.type === 'line') {
+        const pStart = this.getPoint(target.startNodeId);
+        const pEnd = this.getPoint(target.endNodeId);
+        if (!pStart || !pEnd) return;
+
+        // Zbieramy inne segmenty i okręgi
+        const allSegs = this.getAllSegments().filter(s => 
+            !(Math.abs(s.p1.x - pStart.x) < 0.001 && Math.abs(s.p1.y - pStart.y) < 0.001 &&
+              Math.abs(s.p2.x - pEnd.x) < 0.001 && Math.abs(s.p2.y - pEnd.y) < 0.001)
+        );
+        const allCircles = this.getAllCircles();
+
+        const newSegments = SketchMath.calculateTrim({ p1: pStart, p2: pEnd }, clickPoint, allSegs, allCircles);
+
+        if (newSegments) {
+            this.removeEntity(targetId);
+            for (const seg of newSegments) {
+                if (SketchMath.distance(seg.p1, seg.p2) > 0.001) this.addLine(seg.p1, seg.p2);
+            }
+        }
+    } 
+    // --- CASE 2: POLILINIA (ROZBIJANIE I CIĘCIE) ---
+    else if (target.type === 'polyline') {
+        const nodes = target.nodeIds.map(id => this.getPoint(id)).filter(p => p !== null) as Point2D[];
+        if (nodes.length < 2) return;
+
+        // 1. Rozbijamy polilinię na segmenty
+        const polySegments: {p1: Point2D, p2: Point2D, idx: number}[] = [];
+        for (let i = 0; i < nodes.length - 1; i++) {
+            polySegments.push({ p1: nodes[i], p2: nodes[i+1], idx: i });
+        }
+        if (target.closed) {
+            polySegments.push({ p1: nodes[nodes.length-1], p2: nodes[0], idx: nodes.length - 1 });
+        }
+
+        // 2. Znajdź, który segment polilinii kliknięto
+        let clickedSegIdx = -1;
+        let minDist = Infinity;
+        
+        for (let i = 0; i < polySegments.length; i++) {
+            const seg = polySegments[i];
+            const proj = SketchMath.projectPointOnLine(clickPoint, seg.p1, seg.p2);
+            if (proj.dist < minDist) {
+                minDist = proj.dist;
+                clickedSegIdx = i;
+            }
+        }
+
+        if (clickedSegIdx !== -1) {
+            // 3. Usuwamy polilinię
+            this.removeEntity(targetId);
+
+            // 4. Odtwarzamy WSZYSTKIE segmenty jako linie, OPRÓCZ klikniętego
+            const targetSeg = polySegments[clickedSegIdx];
+
+            // Inne segmenty -> zamień na linie
+            for (let i = 0; i < polySegments.length; i++) {
+                if (i === clickedSegIdx) continue;
+                this.addLine(polySegments[i].p1, polySegments[i].p2);
+            }
+
+            // 5. Segment kliknięty -> Trimuj
+            const allSegs = this.getAllSegments(); // Pobierz nowe otoczenie
+            const allCircles = this.getAllCircles();
+            
+            const trimmedParts = SketchMath.calculateTrim(
+                { p1: targetSeg.p1, p2: targetSeg.p2 },
+                clickPoint,
+                allSegs,
+                allCircles
+            );
+
+            if (trimmedParts) {
+                for (const part of trimmedParts) {
+                    if (SketchMath.distance(part.p1, part.p2) > 0.001) this.addLine(part.p1, part.p2);
+                }
+            }
+        }
+    }
+  }
+
+  extendEntity(targetId: string, clickPoint: Point2D): void {
     const target = this.entities.get(targetId);
     if (!target || target.type !== 'line') return;
 
-    const intersections: number[] = [];
-    const EPS = SketchMath.EPSILON; // 1e-5
+    const pStart = this.getPoint(target.startNodeId);
+    const pEnd = this.getPoint(target.endNodeId);
+    if (!pStart || !pEnd) return;
 
-    // 1. Znajdź punkty cięcia (t) na wybranej linii
-    for (const other of this.entities.values()) {
-      if (other.id === targetId) continue;
-      
-      // Obsługa linii
-      if (other.type === 'line') {
-        const result = SketchMath.intersectLineLine(target.start, target.end, other.start, other.end);
-        // Akceptujemy przecięcia wewnątrz innej linii (z małym marginesem)
-        if (result && result.u >= -EPS && result.u <= 1 + EPS) {
-          // Clamp t do zakresu 0-1, żeby zniwelować błędy numeryczne
-          const t = Math.max(0, Math.min(1, result.t));
-          intersections.push(t);
-        }
-      }
-      // (Tu można dodać intersect z kołem/prostokątem w przyszłości)
-    }
+    const allSegs = this.getAllSegments().filter(s => 
+        !(Math.abs(s.p1.x - pStart.x) < 0.001 && Math.abs(s.p1.y - pStart.y) < 0.001 &&
+          Math.abs(s.p2.x - pEnd.x) < 0.001 && Math.abs(s.p2.y - pEnd.y) < 0.001)
+    );
+    const allCircles = this.getAllCircles();
 
-    // Dodaj końce odcinka
-    intersections.push(0, 1);
+    const result = SketchMath.calculateExtend(
+        { p1: pStart, p2: pEnd },
+        clickPoint,
+        allSegs,
+        allCircles 
+    );
 
-    // Posortuj i usuń duplikaty (bardzo bliskie punkty traktuj jako jeden)
-    const uniqueT = intersections
-      .sort((a, b) => a - b)
-      .filter((t, index, array) => {
-        if (index === 0) return true;
-        return t - array[index - 1] > EPS; // Filtruj jeśli różnica < EPSILON
-      });
+    if (result) {
+      // Sprawdź, który koniec wydłużyć
+      const dStart = SketchMath.distance(clickPoint, pStart);
+      const dEnd = SketchMath.distance(clickPoint, pEnd);
+      const extendStart = dStart < dEnd;
 
-    // 2. Znajdź gdzie kliknął użytkownik
-    const proj = SketchMath.projectPointOnLine(clickPoint, target.start, target.end);
-    const clickT = Math.max(0, Math.min(1, proj.t));
+      const nodeId = extendStart ? target.startNodeId : target.endNodeId;
+      const newNodePos = extendStart ? result.p1 : result.p2;
 
-    // 3. Znajdź segment do usunięcia
-    for (let i = 0; i < uniqueT.length - 1; i++) {
-      const tStart = uniqueT[i];
-      const tEnd = uniqueT[i+1];
-
-      // Jeśli kliknięcie jest wewnątrz tego segmentu...
-      if (clickT >= tStart - EPS && clickT <= tEnd + EPS) {
-        
-        // Usuń starą linię
-        this.removeEntity(targetId);
-
-        // Odtwórz segment "przed" wycięciem (jeśli ma długość)
-        if (tStart > EPS) {
-          const pEnd = {
-            x: target.start.x + tStart * (target.end.x - target.start.x),
-            y: target.start.y + tStart * (target.end.y - target.start.y)
-          };
-          this.addEntity(SketchEntityFactory.line(target.start, pEnd));
-        }
-
-        // Odtwórz segment "za" wycięciem (jeśli ma długość)
-        if (tEnd < 1 - EPS) {
-          const pStart = {
-            x: target.start.x + tEnd * (target.end.x - target.start.x),
-            y: target.start.y + tEnd * (target.end.y - target.start.y)
-          };
-          this.addEntity(SketchEntityFactory.line(pStart, target.end));
-        }
-        
-        return; // Zrobione
-      }
-    }
-  }
-/**
-   * EXTEND: Wydłuż linię do najbliższej prostej w kierunku końca bliższego kliknięciu.
-   */
-extendEntity(targetId: string, clickPoint: Point2D): void {
-  const target = this.entities.get(targetId);
-  if (!target || target.type !== 'line') return;
-
-  // Sprawdź który koniec jest bliżej kliknięcia (Start czy End)
-  const dStart = SketchMath.distance(clickPoint, target.start);
-  const dEnd = SketchMath.distance(clickPoint, target.end);
-  const extendStart = dStart < dEnd;
-
-  let bestT: number | null = null;
-  let minDiff = Infinity;
-
-  // Szukaj przecięcia na przedłużeniu linii
-  for (const other of this.entities.values()) {
-    if (other.id === targetId) continue;
-    if (other.type === 'line') {
-      const result = SketchMath.intersectLineLine(target.start, target.end, other.start, other.end);
-      // Przecięcie musi być na "innej" linii
-      if (result && result.u >= 0 && result.u <= 1) {
-        const t = result.t;
-        // Jeśli wydłużamy Start, szukamy t < 0. Jeśli End, szukamy t > 1
-        if (extendStart && t < -0.001) {
-          if (Math.abs(t) < minDiff) { minDiff = Math.abs(t); bestT = t; }
-        } else if (!extendStart && t > 1.001) {
-          const diff = t - 1;
-          if (diff < minDiff) { minDiff = diff; bestT = t; }
-        }
+      // Aktualizujemy współrzędne WĘZŁA
+      const node = this.nodes.get(nodeId);
+      if (node) {
+        node.x = newNodePos.x;
+        node.y = newNodePos.y;
       }
     }
   }
 
-  // Jeśli znaleziono punkt docelowy, zaktualizuj linię
-  if (bestT !== null) {
-    const newPoint = {
-      x: target.start.x + bestT * (target.end.x - target.start.x),
-      y: target.start.y + bestT * (target.end.y - target.start.y)
+  offsetEntity(targetId: string, distance: number, sidePoint: Point2D): void {
+    const target = this.entities.get(targetId);
+    if (!target || target.type !== 'line') return;
+
+    const pStart = this.getPoint(target.startNodeId);
+    const pEnd = this.getPoint(target.endNodeId);
+    if (!pStart || !pEnd) return;
+
+    const normal = SketchMath.getNormal2D(pStart, pEnd);
+    
+    const pTestPos = { x: pStart.x + normal.x * distance, y: pStart.y + normal.y * distance };
+    const pTestNeg = { x: pStart.x - normal.x * distance, y: pStart.y - normal.y * distance };
+    
+    const distPos = SketchMath.distance(pTestPos, sidePoint);
+    const distNeg = SketchMath.distance(pTestNeg, sidePoint);
+    
+    const finalOffset = distPos < distNeg 
+      ? { x: normal.x * distance, y: normal.y * distance }
+      : { x: -normal.x * distance, y: -normal.y * distance };
+
+    const newStart = { x: pStart.x + finalOffset.x, y: pStart.y + finalOffset.y };
+    const newEnd = { x: pEnd.x + finalOffset.x, y: pEnd.y + finalOffset.y };
+
+    this.addLine(newStart, newEnd);
+  }
+
+  // ==========================================================================
+  // EXPORT
+  // ==========================================================================
+
+  exportToNode(planeId: string): Omit<CADSketch, 'id' | 'name' | 'visible' | 'locked' | 'parentId' | 'childIds' | 'transform' | 'createdAt' | 'modifiedAt' | 'metadata'> {
+    return {
+      type: 'sketch',
+      planeId,
+      nodes: Array.from(this.nodes.values()), 
+      entities: this.getEntities(),
+      constraints: this.getAllConstraints(),
+      fullyConstrained: false,
+      profiles: this.getClosedContours()
     };
-    if (extendStart) this.updateEntity(targetId, { start: newPoint });
-    else this.updateEntity(targetId, { end: newPoint });
-  }
-}
-
-/**
-   * OFFSET: Odsuń linię o zadaną odległość w stronę wskazaną kliknięciem.
-   */
-offsetEntity(targetId: string, distance: number, sidePoint: Point2D): void {
-  const target = this.entities.get(targetId);
-  if (!target || target.type !== 'line') return;
-
-  const normal = SketchMath.getNormal2D(target.start, target.end);
-  
-  // Sprawdź dwa potencjalne kierunki odsunięcia (lewo/prawo)
-  const pTestPos = { x: target.start.x + normal.x * distance, y: target.start.y + normal.y * distance };
-  const pTestNeg = { x: target.start.x - normal.x * distance, y: target.start.y - normal.y * distance };
-  
-  // Wybierz ten, który jest bliżej punktu kliknięcia (sidePoint)
-  const distPos = SketchMath.distance(pTestPos, sidePoint);
-  const distNeg = SketchMath.distance(pTestNeg, sidePoint);
-  
-  const finalOffset = distPos < distNeg 
-    ? { x: normal.x * distance, y: normal.y * distance }
-    : { x: -normal.x * distance, y: -normal.y * distance };
-
-  // Utwórz nową linię
-  const newStart = { x: target.start.x + finalOffset.x, y: target.start.y + finalOffset.y };
-  const newEnd = { x: target.end.x + finalOffset.x, y: target.end.y + finalOffset.y };
-
-  this.addEntity(SketchEntityFactory.line(newStart, newEnd));
-}
-
-// --- KONIEC NOWYCH METOD ---
-
-
-  /**
-   * Clear all entities and constraints
-   */
-  clear(): void {
-    this.entities.clear();
-    this.constraints.clear();
   }
 
-  /**
-   * Load entities from a CADSketch node
-   */
   loadFromNode(sketch: CADSketch): void {
     this.clear();
     
-    for (const entity of sketch.entities) {
-      this.entities.set(entity.id, entity);
+    if (sketch.nodes) {
+      for (const n of sketch.nodes) {
+        this.nodes.set(n.id, { ...n });
+      }
     }
-    
-    for (const constraint of sketch.constraints) {
-      this.constraints.set(constraint.id, constraint);
+    for (const e of sketch.entities) {
+      this.entities.set(e.id, e);
     }
-    
-    this.updateConnections();
+    for (const c of sketch.constraints) {
+      this.constraints.set(c.id, c);
+    }
   }
 }
 
 /**
- * Create a new Sketcher instance
+ * Factory
  */
 export function createSketcher(sketchId: string, plane: Plane): Sketcher {
   return new Sketcher(sketchId, plane);

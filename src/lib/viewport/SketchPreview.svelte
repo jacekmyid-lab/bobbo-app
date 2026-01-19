@@ -1,7 +1,3 @@
-<!--
-  SketchPreview.svelte
-  Shows preview of sketch entities being drawn with thick lines
--->
 <script lang="ts">
   import { T } from '@threlte/core';
   import * as THREE from 'three';
@@ -31,6 +27,15 @@
       .add(xAxis.clone().multiplyScalar(x))
       .add(yAxis.clone().multiplyScalar(y));
   }
+
+  // --- OBLICZANIE ROTACJI PŁASZCZYZNY ---
+  // Potrzebne, żeby okręgi i kwadraty snapowania leżały płasko na szkicu
+  let planeRotation = $derived.by(() => {
+    const normal = new THREE.Vector3(plane.normal.x, plane.normal.y, plane.normal.z);
+    const zAxis = new THREE.Vector3(0, 0, 1);
+    const q = new THREE.Quaternion().setFromUnitVectors(zAxis, normal);
+    return new THREE.Euler().setFromQuaternion(q);
+  });
 
   /**
    * Helper to create thick line using mesh (cylinder)
@@ -90,34 +95,17 @@
   }
 
   /**
-   * Generate offset arrow segment
-   */
-  function getOffsetArrowSegment(offsetTool: OffsetTool): {start: THREE.Vector3, end: THREE.Vector3} | null {
-    if (!('getPreviewArrow' in offsetTool)) return null;
-    
-    const arrow = offsetTool.getPreviewArrow();
-    if (!arrow) return null;
-
-    return {
-      start: planeToWorld(arrow.start.x, arrow.start.y),
-      end: planeToWorld(arrow.end.x, arrow.end.y)
-    };
-  }
-
-  /**
    * Create arrow head geometry (cone pointing in direction)
    */
   function createArrowHead(start: THREE.Vector3, end: THREE.Vector3): { geometry: THREE.ConeGeometry, position: THREE.Vector3, rotation: THREE.Euler } {
     const direction = new THREE.Vector3().subVectors(end, start).normalize();
-    const length = 2.5; // Długość grotu
-    const radius = 1.0; // Szerokość grotu
+    const length = 2.5; 
+    const radius = 1.0; 
     
     const geometry = new THREE.ConeGeometry(radius, length, 8);
     
-    // Pozycja grotu na końcu strzałki
     const position = end.clone();
     
-    // Oblicz rotację aby grot był skierowany w stronę end
     const up = new THREE.Vector3(0, 1, 0);
     const quaternion = new THREE.Quaternion().setFromUnitVectors(up, direction);
     const rotation = new THREE.Euler().setFromQuaternion(quaternion);
@@ -249,7 +237,6 @@
           ? getRectangleSegments(tool as RectangleTool) 
           : [];
       case 'sketch-offset':
-        // Dla offset nie pokazujemy standardowych segmentów, tylko strzałkę
         return [];
       default:
         return [];
@@ -294,7 +281,6 @@
   });
 </script>
 
-<!-- Preview thick lines -->
 {#each previewSegments as segment}
   {@const lineData = createThickLine(segment.start, segment.end, PREVIEW_LINE_THICKNESS)}
   <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry}>
@@ -302,7 +288,6 @@
   </T.Mesh>
 {/each}
 
-<!-- Point markers -->
 {#each pointMarkers as point}
   <T.Mesh position={[point.x, point.y, point.z]}>
     <T.SphereGeometry args={[PREVIEW_POINT_SIZE, 16, 16]} />
@@ -310,7 +295,6 @@
   </T.Mesh>
 {/each}
 
-<!-- Close indicator for polyline -->
 {#if toolType === 'sketch-polyline' && tool instanceof Object && 'canClose' in tool && (tool as PolylineTool).canClose()}
   {@const points = (tool as PolylineTool).getPoints()}
   {#if points.length > 0}
@@ -322,15 +306,12 @@
   {/if}
 {/if}
 
-<!-- Offset tool: Arrow with head -->
 {#if offsetArrowData}
-  <!-- Arrow shaft (line) -->
   {@const lineData = createThickLine(offsetArrowData.segment.start, offsetArrowData.segment.end, PREVIEW_LINE_THICKNESS)}
   <T.Mesh position={lineData.position.toArray()} geometry={lineData.geometry}>
     <T.MeshBasicMaterial color="#f59e0b" />
   </T.Mesh>
   
-  <!-- Arrow head (cone) -->
   <T.Mesh 
     position={offsetArrowData.arrowHead.position.toArray()}
     rotation={[offsetArrowData.arrowHead.rotation.x, offsetArrowData.arrowHead.rotation.y, offsetArrowData.arrowHead.rotation.z]}
@@ -339,30 +320,29 @@
     <T.MeshBasicMaterial color="#f59e0b" />
   </T.Mesh>
   
-  <!-- Base point indicator -->
   <T.Mesh position={offsetArrowData.segment.start.toArray()}>
     <T.SphereGeometry args={[0.6, 16, 16]} />
     <T.MeshBasicMaterial color="#ffffff" />
   </T.Mesh>
-  
-  <!-- Side indicator text would go here if needed -->
 {/if}
 
-<!-- Snap indicator - bright cyan/magenta square -->
 {#if snapPosition}
-  <!-- Outer glow ring -->
-  <T.Mesh position={[snapPosition.x, snapPosition.y, snapPosition.z]}>
-    <T.RingGeometry args={[1.2, 1.8, 16]} />
-    <T.MeshBasicMaterial color="#00ffff" transparent opacity={0.6} />
+  <T.Mesh 
+    position={[snapPosition.x, snapPosition.y, snapPosition.z]}
+    rotation={[planeRotation.x, planeRotation.y, planeRotation.z]}
+  >
+    <T.RingGeometry args={[1.2, 1.8, 32]} />
+    <T.MeshBasicMaterial color="#00ffff" transparent opacity={0.6} side={THREE.DoubleSide} />
   </T.Mesh>
   
-  <!-- Inner snap marker -->
-  <T.Mesh position={[snapPosition.x, snapPosition.y, snapPosition.z]}>
+  <T.Mesh 
+    position={[snapPosition.x, snapPosition.y, snapPosition.z]}
+    rotation={[planeRotation.x, planeRotation.y, planeRotation.z]}
+  >
     <T.BoxGeometry args={[1.5, 1.5, 0.1]} />
     <T.MeshBasicMaterial color="#ff00ff" />
   </T.Mesh>
   
-  <!-- Pulsing effect - small center dot -->
   <T.Mesh position={[snapPosition.x, snapPosition.y, snapPosition.z]}>
     <T.SphereGeometry args={[0.4, 16, 16]} />
     <T.MeshBasicMaterial color="#ffffff" />

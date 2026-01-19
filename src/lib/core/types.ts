@@ -2,17 +2,15 @@
  * ============================================================================
  * CAD CORE TYPES - FUNDAMENTAL TYPE DEFINITIONS
  * ============================================================================
- * 
- * This module defines all core types used throughout the CAD application.
+ * * This module defines all core types used throughout the CAD application.
  * It serves as the single source of truth for type definitions and ensures
  * consistency across all modules.
- * 
- * Key Design Principles:
+ * * Key Design Principles:
  * 1. All geometry is based on Manifold-3D for CSG operations
  * 2. Types are designed for extensibility
  * 3. Clear separation between data and presentation
- * 
- * @module core/types
+ * 4. Sketching uses Node-Based Topology
+ * * @module core/types
  */
 
 import type { Manifold, Mesh, CrossSection } from 'manifold-3d';
@@ -98,22 +96,27 @@ export type SelectionMode = 'model' | 'face' | 'edge' | 'vertex';
  */
 export interface Selection {
   /** Type of selected element */
-  type: SelectionMode;
-  /** ID of the parent model */
+  type: SelectionMode | 'sketch-entity'; // Added sketch-entity support
+  /** ID of the parent model (or sketch entity ID) */
   modelId: string;
   /** Index of the element within the model (for face/edge/vertex) */
   elementIndex?: number;
   /** World position of the selection point */
   point?: Point3D;
+  /** Optional name */
+  elementName?: string;
+  /** Optional position for vertices */
+  position?: Point3D;
 }
 
 /**
  * Hover state for highlighting elements
  */
 export interface HoverState {
-  type: SelectionMode;
+  type: SelectionMode | 'sketch-entity';
   modelId: string;
   elementIndex?: number;
+  elementName?: string;
 }
 
 // ============================================================================
@@ -267,7 +270,7 @@ export interface CADBoolean extends CADNodeBase {
 }
 
 // ============================================================================
-// SKETCH TYPES
+// SKETCH TYPES (TOPOLOGY & GEOMETRY)
 // ============================================================================
 
 /**
@@ -283,6 +286,17 @@ export type SketchEntityType =
   | 'point';
 
 /**
+ * Fundamental atomic unit of geometry (Topology Node)
+ * Allows connecting multiple entities to the same point.
+ */
+export interface SketchNode {
+  id: string;
+  x: number;
+  y: number;
+  fixed?: boolean;
+}
+
+/**
  * Base interface for sketch entities
  */
 export interface SketchEntityBase {
@@ -292,53 +306,58 @@ export interface SketchEntityBase {
   type: SketchEntityType;
   /** Whether this is a construction geometry */
   construction: boolean;
-  /** Connected entity IDs */
+  /** Connected entity IDs (logical connections beyond nodes) */
   connections: string[];
 }
 
 /**
  * Line segment in sketch
+ * NOW USES NODE IDs
  */
 export interface SketchLine extends SketchEntityBase {
   type: 'line';
-  start: Point2D;
-  end: Point2D;
+  startNodeId: string; // Reference to SketchNode
+  endNodeId: string;   // Reference to SketchNode
 }
 
 /**
  * Polyline (connected line segments)
+ * NOW USES NODE IDs
  */
 export interface SketchPolyline extends SketchEntityBase {
   type: 'polyline';
-  points: Point2D[];
+  nodeIds: string[]; // Array of references to SketchNodes
   closed: boolean;
 }
 
 /**
  * Rectangle in sketch
+ * NOW USES NODE IDs
  */
 export interface SketchRectangle extends SketchEntityBase {
   type: 'rectangle';
-  corner: Point2D;
+  cornerNodeId: string; // Reference to Top-Left SketchNode
   width: number;
   height: number;
 }
 
 /**
  * Circle in sketch
+ * NOW USES NODE IDs
  */
 export interface SketchCircle extends SketchEntityBase {
   type: 'circle';
-  center: Point2D;
+  centerNodeId: string; // Reference to Center SketchNode
   radius: number;
 }
 
 /**
  * Arc in sketch
+ * NOW USES NODE IDs
  */
 export interface SketchArc extends SketchEntityBase {
   type: 'arc';
-  center: Point2D;
+  centerNodeId: string; // Reference to Center SketchNode
   radius: number;
   startAngle: number;
   endAngle: number;
@@ -346,19 +365,21 @@ export interface SketchArc extends SketchEntityBase {
 
 /**
  * Spline curve in sketch
+ * NOW USES NODE IDs
  */
 export interface SketchSpline extends SketchEntityBase {
   type: 'spline';
-  controlPoints: Point2D[];
+  controlPointNodeIds: string[]; // References to SketchNodes
   degree: number;
 }
 
 /**
  * Point in sketch (for constraints)
+ * NOW USES NODE IDs
  */
 export interface SketchPoint extends SketchEntityBase {
   type: 'point';
-  position: Point2D;
+  nodeId: string; // Reference to SketchNode
 }
 
 /**
@@ -401,6 +422,25 @@ export interface ConstraintBase {
   id: string;
   type: ConstraintType;
   entityIds: string[];
+  enabled?: boolean; 
+}
+
+/**
+ * Vertical constraint - forces line to be vertical (parallel to Y axis)
+ */
+export interface VerticalConstraint extends ConstraintBase {
+  type: 'vertical';
+  entityIds: [string]; // Single line entity
+  enabled: boolean;
+}
+
+/**
+ * Horizontal constraint - forces line to be horizontal (parallel to X axis)
+ */
+export interface HorizontalConstraint extends ConstraintBase {
+  type: 'horizontal';
+  entityIds: [string]; // Single line entity
+  enabled: boolean;
 }
 
 /**
@@ -434,10 +474,24 @@ export interface RadiusConstraint extends ConstraintBase {
  * Union of all constraint types
  */
 export type Constraint = 
+  | VerticalConstraint   
+  | HorizontalConstraint 
   | ConstraintBase 
   | DistanceConstraint 
   | AngleConstraint 
   | RadiusConstraint;
+
+
+/**
+ * Constraint solving result
+ */
+export interface SolveResult {
+  success: boolean;
+  iterations: number;
+  error?: string;
+  /** Entities that were modified */
+  modifiedEntities: string[];
+}
 
 // ============================================================================
 // SKETCH NODE
@@ -450,7 +504,9 @@ export interface CADSketch extends CADNodeBase {
   type: 'sketch';
   /** Plane this sketch is on */
   planeId: string;
-  /** All entities in the sketch */
+  /** All nodes (points) in the sketch - TOPOLOGY */
+  nodes: SketchNode[];
+  /** All entities in the sketch - GEOMETRY */
   entities: SketchEntity[];
   /** All constraints */
   constraints: Constraint[];
@@ -664,7 +720,10 @@ export type ToolType =
   | 'sketch-trim'
   | 'sketch-extend'
   | 'sketch-offset'
-
+  // Constraint tools
+  | 'vertical-constraint'
+  | 'horizontal-constraint'
+  
   // Feature tools
   | 'extrude'
   | 'revolve'
